@@ -149,6 +149,36 @@ STATUS_BOX_CSS = """
 }
 """
 
+# 'pause' doesn't bubble, so listen on the document in the capture phase instead.
+MAIN_VIDEO_PAUSE_JS = """
+<script>
+function bsFormatTimecode(totalSeconds) {
+    totalSeconds = Math.max(0, totalSeconds);
+    const hours = Math.floor(totalSeconds / 3600);
+    const rem = totalSeconds - hours * 3600;
+    const minutes = Math.floor(rem / 60);
+    const secs = rem - minutes * 60;
+    const secsStr = secs.toFixed(1).padStart(4, '0');
+    if (hours >= 1) {
+        return hours + ':' + String(minutes).padStart(2, '0') + ':' + secsStr;
+    }
+    return minutes + ':' + secsStr;
+}
+document.addEventListener('pause', function (event) {
+    const video = event.target;
+    if (!video || video.tagName !== 'VIDEO' || !video.closest('#generated-video-output')) {
+        return;
+    }
+    const field = document.querySelector('#timecode-input textarea, #timecode-input input');
+    if (!field) {
+        return;
+    }
+    field.value = bsFormatTimecode(video.currentTime);
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+}, true);
+</script>
+"""
+
 
 def _stage_status(stage_number: int) -> str:
     return f"Stage {stage_number} is processing. Please wait."
@@ -1155,8 +1185,27 @@ def _get_upload_state_file() -> str:
     return os.path.join(GRADIO_TEMP_DIR, '_last_upload_state.json')
 
 
+def _default_settings_state() -> dict:
+    """Defaults matching each GUI component's initial value, used as the persistence fallback."""
+    return {
+        'audio': None, 'videos': [], 'video_folder': None, 'first_video': None, 'last_video': None,
+        'output_filename': 'music_video.mp4',
+        'processing_mode': 'h264_nvenc' if NVENC_AVAILABLE else 'cpu',
+        'custom_fps': None,
+        'strict_mode': True,
+        'edge_buffer_seconds': 2.0,
+        'clip_order_mode': 'auto',
+        'start_text': '', 'start_text_position': 'bottom_center', 'start_text_duration': 3.0,
+        'end_text': '', 'end_text_position': 'bottom_center', 'end_text_duration': 3.0,
+        'text_font': DEFAULT_TEXT_FONT,
+        'fade_enabled': False, 'fade_duration': 1.0,
+        'last_video_output': None,
+        'last_plan_path': None,
+    }
+
+
 def _load_upload_state() -> dict:
-    state = {'audio': None, 'videos': [], 'video_folder': None, 'first_video': None, 'last_video': None}
+    state = _default_settings_state()
     state_file = _get_upload_state_file()
     if os.path.exists(state_file):
         try:
@@ -1244,6 +1293,59 @@ def _persist_last_video(path: str | None) -> None:
     _save_upload_state(state)
 
 
+# Keys persisted from the settings components below, in the exact order they're wired up.
+_SETTINGS_KEYS = [
+    'output_filename', 'processing_mode', 'custom_fps', 'strict_mode', 'edge_buffer_seconds',
+    'clip_order_mode', 'start_text', 'start_text_position', 'start_text_duration',
+    'end_text', 'end_text_position', 'end_text_duration', 'text_font',
+    'fade_enabled', 'fade_duration',
+]
+
+
+def _persist_settings(*values) -> None:
+    state = _load_upload_state()
+    for key, value in zip(_SETTINGS_KEYS, values):
+        state[key] = value
+    _save_upload_state(state)
+
+
+def _persist_last_output(path: str | None) -> None:
+    state = _load_upload_state()
+    state['last_video_output'] = path or None
+    _save_upload_state(state)
+
+
+def _persist_last_plan(plan_path: str | None) -> None:
+    state = _load_upload_state()
+    state['last_plan_path'] = plan_path or None
+    _save_upload_state(state)
+
+
+def _restore_settings():
+    """Repopulate the settings components and last result from the previous session."""
+    state = _load_upload_state()
+    defaults = _default_settings_state()
+    updates = [gr.update(value=state.get(key, defaults[key])) for key in _SETTINGS_KEYS]
+
+    last_output = state.get('last_video_output')
+    video_output_value = last_output if last_output and os.path.isfile(last_output) else None
+    updates.append(gr.update(value=video_output_value))
+
+    plan_path = state.get('last_plan_path')
+    plan_choices = _refine_plan_choices()
+    plan_value = plan_path if plan_path in dict(plan_choices).values() else None
+    updates.append(gr.update(choices=plan_choices, value=plan_value))
+
+    return tuple(updates)
+
+
+def _restore_refine_state(plan_path: str | None, refine_state: dict):
+    """Load the restored plan's editor state, or leave things untouched if there wasn't one."""
+    if not plan_path:
+        return refine_state, gr.update(), gr.update(), gr.update()
+    return refine_load_plan(plan_path, refine_state)
+
+
 def _restore_uploads():
     """Repopulate the file inputs from the last session, skipping files that no longer exist."""
     state = _load_upload_state()
@@ -1278,7 +1380,7 @@ def create_ui() -> gr.Blocks:
         cuda_status = "⚠️  System CUDA (or not available)"
     ffmpeg_status = "✅ Portable (bin/ffmpeg/)" if FFMPEG_FOUND else "⚠️  System FFmpeg"
     
-    app = gr.Blocks(title='BeatSync Engine', theme='ocean', css=STATUS_BOX_CSS)
+    app = gr.Blocks(title='BeatSync Engine', theme='ocean', css=STATUS_BOX_CSS, head=MAIN_VIDEO_PAUSE_JS)
     with app:
         session_state = gr.State({})
         refine_state = gr.State({'plan_path': None, 'plan': None, 'selected_clip': None, 'offsets': {}})
@@ -1320,11 +1422,11 @@ def create_ui() -> gr.Blocks:
                     )
                     with gr.Group():
                         gr.Markdown('#### 📝 Text Overlays')
-                        start_text = gr.Textbox(label=LABEL_START_TEXT, info=INFO_START_TEXT, lines=2, max_lines=4)
+                        start_text = gr.Textbox(label=LABEL_START_TEXT, info=INFO_START_TEXT, lines=3, max_lines=8)
                         with gr.Row():
                             start_text_position = gr.Dropdown(TEXT_POSITION_CHOICES, value='bottom_center', label=LABEL_TEXT_POSITION)
                             start_text_duration = gr.Number(value=3.0, minimum=0.1, precision=1, label=LABEL_TEXT_DURATION)
-                        end_text = gr.Textbox(label=LABEL_END_TEXT, info=INFO_END_TEXT, lines=2, max_lines=4)
+                        end_text = gr.Textbox(label=LABEL_END_TEXT, info=INFO_END_TEXT, lines=3, max_lines=8)
                         with gr.Row():
                             end_text_position = gr.Dropdown(TEXT_POSITION_CHOICES, value='bottom_center', label=LABEL_TEXT_POSITION)
                             end_text_duration = gr.Number(value=3.0, minimum=0.1, precision=1, label=LABEL_TEXT_DURATION)
@@ -1379,7 +1481,8 @@ def create_ui() -> gr.Blocks:
                         refresh_plans_btn = gr.Button('🔄', scale=1)
                     with gr.Row():
                         timecode_input = gr.Textbox(
-                            label='Timecode in the output video', placeholder='1:23', scale=3
+                            label='Timecode in the output video', placeholder='1:23', scale=3,
+                            elem_id='timecode-input'
                         )
                         find_clip_btn = gr.Button('🔍 Find clip', scale=1)
                     refine_info = gr.Markdown('_Load a render plan to begin._')
@@ -1413,12 +1516,21 @@ def create_ui() -> gr.Blocks:
         ).then(
             fn=lambda state: gr.update(choices=_refine_plan_choices(), value=(state or {}).get('last_plan_path')),
             inputs=[session_state], outputs=[plan_selector],
+        ).then(
+            # plan_selector.change doesn't reliably fire when choices+value update together, so load explicitly.
+            fn=_restore_refine_state, inputs=[plan_selector, refine_state],
+            outputs=[refine_state, refine_info, pending_changes_view, clip_preview],
+        ).then(
+            fn=_persist_last_output, inputs=[video_output], outputs=[],
+        ).then(
+            fn=_persist_last_plan, inputs=[plan_selector], outputs=[],
         )
 
         refresh_plans_btn.click(
             fn=lambda: gr.update(choices=_refine_plan_choices()), outputs=[plan_selector],
         )
-        plan_selector.change(
+        # .input() only fires on a real user pick; a restored/programmatic value must not reload the plan again.
+        plan_selector.input(
             fn=refine_load_plan, inputs=[plan_selector, refine_state],
             outputs=[refine_state, refine_info, pending_changes_view, clip_preview],
         )
@@ -1452,6 +1564,10 @@ def create_ui() -> gr.Blocks:
                 _refine_pending_text(state or {}),
             ),
             inputs=[refine_state], outputs=[plan_selector, pending_changes_view],
+        ).then(
+            fn=_persist_last_output, inputs=[video_output], outputs=[],
+        ).then(
+            fn=_persist_last_plan, inputs=[plan_selector], outputs=[],
         )
 
         text_font.change(
@@ -1467,8 +1583,11 @@ def create_ui() -> gr.Blocks:
             inputs=[text_font, start_text, end_text], outputs=[text_font_preview],
         )
 
-        audio_input.change(fn=_persist_audio_upload, inputs=[audio_input], outputs=[])
-        video_input.change(
+        # .input() (user-driven only) avoids a restore feedback loop: .change() also fires when
+        # app.load sets these values programmatically, which would immediately re-save and
+        # overwrite the just-restored audio/first/last video with mismatched/empty values.
+        audio_input.input(fn=_persist_audio_upload, inputs=[audio_input], outputs=[])
+        video_input.input(
             fn=_persist_video_upload, inputs=[video_input],
             outputs=[first_video_input, last_video_input]
         )
@@ -1477,15 +1596,36 @@ def create_ui() -> gr.Blocks:
             outputs=[first_video_input, last_video_input]
         )
         # Also react on blur/paste (not just Enter) so the dropdowns populate reliably.
-        video_folder_input.change(
+        video_folder_input.input(
             fn=_persist_video_folder, inputs=[video_folder_input],
             outputs=[first_video_input, last_video_input]
         )
-        first_video_input.change(fn=_persist_first_video, inputs=[first_video_input], outputs=[])
-        last_video_input.change(fn=_persist_last_video, inputs=[last_video_input], outputs=[])
+        first_video_input.input(fn=_persist_first_video, inputs=[first_video_input], outputs=[])
+        last_video_input.input(fn=_persist_last_video, inputs=[last_video_input], outputs=[])
         app.load(
             fn=_restore_uploads, inputs=None,
             outputs=[audio_input, video_input, video_folder_input, first_video_input, last_video_input]
+        )
+
+        _settings_components = [
+            output_filename, processing_mode, custom_fps, strict_mode, edge_buffer_seconds,
+            clip_order_mode, start_text, start_text_position, start_text_duration,
+            end_text, end_text_position, end_text_duration, text_font,
+            fade_enabled, fade_duration,
+        ]
+        gr.on(
+            triggers=[c.input for c in _settings_components],
+            fn=_persist_settings, inputs=_settings_components, outputs=[],
+        )
+        app.load(
+            fn=_restore_settings, inputs=None,
+            outputs=[*_settings_components, video_output, plan_selector],
+        ).then(
+            fn=lambda font, s, e: render_font_preview_html(font, (s or '').strip() or (e or '').strip() or FONT_PREVIEW_SAMPLE),
+            inputs=[text_font, start_text, end_text], outputs=[text_font_preview],
+        ).then(
+            fn=_restore_refine_state, inputs=[plan_selector, refine_state],
+            outputs=[refine_state, refine_info, pending_changes_view, clip_preview],
         )
 
     return app

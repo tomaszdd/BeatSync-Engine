@@ -514,6 +514,10 @@ def render_single_clip_preview(plan: Dict, clip_index: int, offset: float) -> Tu
         target_size=target_size,
         use_nvenc=False,
         gpu_encoder='none',
+        # Keep this on-demand render light so it doesn't stutter a main video playing in the browser.
+        threads=2,
+        hwaccel=False,
+        low_priority=True,
     )
     if not success:
         raise RuntimeError(f"Could not extract preview for clip {clip_index + 1}.")

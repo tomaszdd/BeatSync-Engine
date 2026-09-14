@@ -41,14 +41,19 @@ NVENC_LOOKAHEAD = '32'
 NVENC_AQ_STRENGTH = '12'
 
 
-def _run_media_command(cmd: List[str], timeout: int) -> subprocess.CompletedProcess[str]:
+def _run_media_command(cmd: List[str], timeout: int, low_priority: bool = False) -> subprocess.CompletedProcess[str]:
     """Run an FFmpeg/FFprobe command with consistent capture settings."""
+    creationflags = 0
+    if low_priority and sys.platform == 'win32':
+        # Let the OS scheduler favor other processes (e.g. the browser playing a video) over this one.
+        creationflags = subprocess.BELOW_NORMAL_PRIORITY_CLASS
     return subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=timeout,
         check=False,
+        creationflags=creationflags,
     )
 
 
@@ -135,7 +140,7 @@ def get_nvenc_quality_args(gpu_encoder: str, include_pix_fmt: bool = True) -> Li
     return args
 
 
-def get_cpu_h264_quality_args(include_pix_fmt: bool = True) -> List[str]:
+def get_cpu_h264_quality_args(include_pix_fmt: bool = True, threads: int | None = None) -> List[str]:
     """Return lossless CPU H.264 settings."""
     args = [
         '-c:v', 'libx264',
@@ -144,7 +149,7 @@ def get_cpu_h264_quality_args(include_pix_fmt: bool = True) -> List[str]:
     ]
     if include_pix_fmt:
         args.extend(['-pix_fmt', 'yuv420p'])
-    args.extend(['-threads', str(MAX_THREADS)])
+    args.extend(['-threads', str(threads or MAX_THREADS)])
     return args
 
 
@@ -530,7 +535,10 @@ def convert_to_prores_proxy(video_file: str, output_dir: str, fps: float = None)
 def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: float,
                                 output_file: str, fps: float, target_size: Tuple[int, int],
                                 use_nvenc: bool,
-                                gpu_encoder: str = 'h264_nvenc') -> bool:
+                                gpu_encoder: str = 'h264_nvenc',
+                                threads: int | None = None,
+                                hwaccel: bool = True,
+                                low_priority: bool = False) -> bool:
     """
     Extract a video segment using FFmpeg with FRAME-ACCURATE timing.
     
@@ -566,7 +574,7 @@ def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: fl
         # Hardware acceleration
         if use_nvenc:
             cmd.extend(['-hwaccel', 'cuda'])
-        else:
+        elif hwaccel:
             cmd.extend(['-hwaccel', 'auto'])
         
         # ✅ FRAME-ACCURATE INPUT SEEKING
@@ -588,7 +596,7 @@ def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: fl
         if use_nvenc:
             cmd.extend(get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
         else:
-            cmd.extend(get_cpu_h264_quality_args(include_pix_fmt=True))
+            cmd.extend(get_cpu_h264_quality_args(include_pix_fmt=True, threads=threads))
         
         # No audio, frame-accurate settings
         cmd.extend([
@@ -601,7 +609,7 @@ def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: fl
             output_file
         ])
         
-        result = _run_media_command(cmd, timeout=120)
+        result = _run_media_command(cmd, timeout=120, low_priority=low_priority)
         
         if result.returncode != 0:
             print(f"   ⚠️  FFmpeg error: {result.stderr}")

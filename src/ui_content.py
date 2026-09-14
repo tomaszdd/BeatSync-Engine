@@ -355,8 +355,8 @@ LABEL_START_TEXT = "📝 Start text"
 LABEL_END_TEXT = "📝 End text"
 LABEL_TEXT_POSITION = "Position"
 LABEL_TEXT_DURATION = "Duration (seconds)"
-INFO_START_TEXT = "Shown at the start of the output video. Leave empty for no overlay."
-INFO_END_TEXT = "Shown at the end of the output video. Leave empty for no overlay."
+INFO_START_TEXT = "Shown at the start of the output video. Leave empty for no overlay. Press Enter for a line break."
+INFO_END_TEXT = "Shown at the end of the output video. Leave empty for no overlay. Press Enter for a line break."
 TEXT_POSITION_CHOICES = [
     ('Top left', 'top_left'), ('Top center', 'top_center'), ('Top right', 'top_right'),
     ('Middle left', 'middle_left'), ('Centered', 'middle_center'), ('Middle right', 'middle_right'),
