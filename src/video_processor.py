@@ -281,9 +281,9 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         '--gpu-encoder',
         type=str,
-        choices=['h264_nvenc', 'hevc_nvenc', 'none'],
+        choices=['h264_nvenc', 'hevc_nvenc', 'h264_amf', 'hevc_amf', 'none'],
         default='h264_nvenc',
-        help='GPU encoder: h264_nvenc (H.264), hevc_nvenc (H.265), none (CPU) (default: h264_nvenc)'
+        help='GPU encoder: h264_nvenc/hevc_nvenc (NVIDIA), h264_amf/hevc_amf (AMD), none (CPU) (default: h264_nvenc)'
     )
     parser.add_argument(
         '--fps',
@@ -1369,7 +1369,11 @@ def main() -> None:
     print(f"\n{'='*60}")
     print(f"🎵 BEATSYNC ENGINE - AUTO MODE")
     print(f"   Audio Analysis: {'⚡ GPU' if args.gpu else '💻 CPU'}")
-    if args.gpu and NVENC_AVAILABLE and not args.lossless:
+    hwenc_for_banner = not args.lossless and (
+        (args.gpu_encoder in ('h264_nvenc', 'hevc_nvenc') and NVENC_AVAILABLE) or
+        (args.gpu_encoder in ('h264_amf', 'hevc_amf') and AMF_AVAILABLE)
+    )
+    if hwenc_for_banner:
         print(f"   Video Encoding: ⚡ {args.gpu_encoder.upper()}")
     else:
         print(f"   Video Encoding: 💻 CPU")
@@ -1397,7 +1401,13 @@ def main() -> None:
     elif args.start_time > 0:
         audio_duration -= args.start_time
     image_source_dir = tempfile.mkdtemp(prefix='beatsync_image_sources_')
-    use_nvenc_for_images = args.gpu and NVENC_AVAILABLE and not args.lossless and args.gpu_encoder != 'none'
+    # Mirrors create_music_video()'s own hardware-encoder gate: driven purely by
+    # gpu_encoder family + NVENC_AVAILABLE/AMF_AVAILABLE, not args.gpu (which only
+    # reflects CUDA/CuPy audio-analysis availability and is unrelated to encoding).
+    use_nvenc_for_images = not args.lossless and (
+        (args.gpu_encoder in ('h264_nvenc', 'hevc_nvenc') and NVENC_AVAILABLE) or
+        (args.gpu_encoder in ('h264_amf', 'hevc_amf') and AMF_AVAILABLE)
+    )
     pre_conversion_paths = list(video_files)
     video_files = prepare_visual_sources(
         video_files, audio_duration, fps_for_images, image_source_dir, args.edge_buffer_seconds,
