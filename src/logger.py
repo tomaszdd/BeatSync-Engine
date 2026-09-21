@@ -131,23 +131,36 @@ def get_gpu_info() -> Dict:
         
     return info
 
-def check_nvenc() -> bool:
-    """Check if FFmpeg supports NVIDIA hardware encoding (NVENC)."""
+def _probe_hw_encoder(encoder_name: str) -> bool:
+    """Check that FFmpeg can actually USE a hardware encoder, not just that the
+    codec name is compiled in. FFmpeg Windows builds commonly ship with NVENC,
+    AMF, and QSV all compiled in regardless of which (if any) vendor's GPU is
+    actually present -- a plain '-encoders' string match reports a compiled-in
+    codec as "available" even with no matching hardware, which silently steers
+    callers toward an encoder that will fail the moment it's actually used.
+    Runs a trivial 1-frame encode instead; a real usability check.
+    """
     try:
-        cmd = [FFMPEG_EXE if FFMPEG_FOUND else 'ffmpeg', '-encoders']
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        return 'h264_nvenc' in result.stdout
+        cmd = [
+            FFMPEG_EXE if FFMPEG_FOUND else 'ffmpeg',
+            '-hide_banner', '-loglevel', 'error', '-nostdin',
+            '-f', 'lavfi', '-i', 'nullsrc=s=64x64:d=0.1',
+            '-frames:v', '1', '-c:v', encoder_name,
+            '-f', 'null', '-',
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=10)
+        return result.returncode == 0
     except Exception:
         return False
 
+
+def check_nvenc() -> bool:
+    """Check if FFmpeg can actually use NVIDIA hardware encoding (NVENC)."""
+    return _probe_hw_encoder('h264_nvenc')
+
 def check_amf() -> bool:
-    """Check if FFmpeg supports AMD hardware encoding (AMF)."""
-    try:
-        cmd = [FFMPEG_EXE if FFMPEG_FOUND else 'ffmpeg', '-encoders']
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        return 'h264_amf' in result.stdout
-    except Exception:
-        return False
+    """Check if FFmpeg can actually use AMD hardware encoding (AMF)."""
+    return _probe_hw_encoder('h264_amf')
 
 # ============================================================================
 # LOGGING & OUTPUT
