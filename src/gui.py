@@ -1592,8 +1592,12 @@ def create_ui() -> gr.Blocks:
         # .input() (user-driven only) avoids a restore feedback loop: .change() also fires when
         # app.load sets these values programmatically, which would immediately re-save and
         # overwrite the just-restored audio/first/last video with mismatched/empty values.
-        audio_input.input(fn=_persist_audio_upload, inputs=[audio_input], outputs=[])
-        video_input.input(
+        # audio_input/video_input are gr.File, which has no .input() event in this Gradio
+        # version (6.19.0) -- .upload() is the File-component equivalent: user-driven only,
+        # same as .input() is for other component types, so it preserves the same feedback-
+        # loop protection described above.
+        audio_input.upload(fn=_persist_audio_upload, inputs=[audio_input], outputs=[])
+        video_input.upload(
             fn=_persist_video_upload, inputs=[video_input],
             outputs=[first_video_input, last_video_input]
         )
