@@ -601,12 +601,15 @@ def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: fl
         cmd = [FFMPEG_PATH]
         
         # Hardware acceleration. CUDA decode hwaccel is NVIDIA-specific, so gate it on
-        # the NVENC family specifically -- AMF exports fall through to generic 'auto'
-        # decode hwaccel like the CPU path does.
+        # the NVENC family specifically. Do NOT use '-hwaccel auto' for anything else
+        # (CPU or AMF) -- confirmed on real hardware that FFmpeg's 'auto' selection can
+        # pick DXVA2 and fail with "Failed to create Direct3D device" on at least one
+        # real Windows/AMD-iGPU machine (same class of driver-combination failure the
+        # ProRes path above already documents/avoids). Only the encode is meant to be
+        # hardware-accelerated for AMF; decode falls back to plain CPU/software, same
+        # as it always has for the CPU-only path.
         if use_nvenc and gpu_encoder in ('h264_nvenc', 'hevc_nvenc'):
             cmd.extend(['-hwaccel', 'cuda'])
-        elif hwaccel:
-            cmd.extend(['-hwaccel', 'auto'])
         
         # ✅ FRAME-ACCURATE INPUT SEEKING
         # Use -ss BEFORE -i for faster seeking (keyframe-based)
@@ -889,12 +892,12 @@ def concatenate_videos_ffmpeg(video_files: List[str], output_file: str,
             encode_started = time.perf_counter()
             cmd = [FFMPEG_PATH]
             
-            # CUDA decode hwaccel is NVIDIA-specific; AMF exports fall through to
-            # generic 'auto' decode hwaccel like the CPU path does.
+            # CUDA decode hwaccel is NVIDIA-specific. Do NOT fall back to '-hwaccel auto'
+            # for CPU/AMF -- confirmed on real hardware it can pick DXVA2 and fail with
+            # "Failed to create Direct3D device" (same driver-combination risk the ProRes
+            # path already documents). Decode falls back to plain CPU/software instead.
             if use_nvenc and gpu_encoder in ('h264_nvenc', 'hevc_nvenc'):
                 cmd.extend(['-hwaccel', 'cuda'])
-            else:
-                cmd.extend(['-hwaccel', 'auto'])
 
             cmd.extend([
                 '-f', 'concat',
