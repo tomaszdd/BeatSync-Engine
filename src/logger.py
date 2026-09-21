@@ -144,7 +144,11 @@ def _probe_hw_encoder(encoder_name: str) -> bool:
         cmd = [
             FFMPEG_EXE if FFMPEG_FOUND else 'ffmpeg',
             '-hide_banner', '-loglevel', 'error', '-nostdin',
-            '-f', 'lavfi', '-i', 'nullsrc=s=64x64:d=0.1',
+            # 1280x720: some hardware encoders (confirmed for AMF) reject very
+            # small/odd test resolutions like 64x64 with an init error even
+            # when the encoder is genuinely usable -- 1280x720 is a real,
+            # always-valid size and still a sub-second probe.
+            '-f', 'lavfi', '-i', 'nullsrc=s=1280x720:d=0.1',
             '-frames:v', '1', '-c:v', encoder_name,
             '-f', 'null', '-',
         ]
