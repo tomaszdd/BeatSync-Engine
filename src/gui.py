@@ -100,6 +100,7 @@ from gpu_cpu_utils import (
     GPU_INFO,
     GPU_AVAILABLE,
     NVENC_AVAILABLE,
+    AMF_AVAILABLE,
     set_gpu_mode,
 )
 from paths import (
@@ -527,8 +528,11 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
         
         # Determine processing mode
         is_prores = processing_mode == 'prores_proxy'
-        use_nvenc = (processing_mode in ['h264_nvenc', 'hevc_nvenc']) and NVENC_AVAILABLE
-        gpu_encoder = processing_mode if use_nvenc else 'none'
+        use_hwenc = (
+            (processing_mode in ['h264_nvenc', 'hevc_nvenc'] and NVENC_AVAILABLE) or
+            (processing_mode in ['h264_amf', 'hevc_amf'] and AMF_AVAILABLE)
+        )
+        gpu_encoder = processing_mode if use_hwenc else 'none'
         
         python_str = "Portable" if USING_PORTABLE_PYTHON else "System"
         cuda_str = "CuPy CTK" if USING_CUPY_CTK else ("Portable" if USING_PORTABLE_CUDA else "System/None")
@@ -550,7 +554,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
         pre_conversion_paths = list(local_video_paths)
         local_video_paths = prepare_visual_sources(
             local_video_paths, audio_duration, output_fps, image_source_dir, edge_buffer_seconds,
-            use_nvenc=use_nvenc, gpu_encoder=gpu_encoder, lossless=is_prores, target_size=target_resolution,
+            use_nvenc=use_hwenc, gpu_encoder=gpu_encoder, lossless=is_prores, target_size=target_resolution,
             debug_callback=debug_callback,
         )
         image_capture_times = build_image_capture_time_map(pre_conversion_paths, local_video_paths)
@@ -675,7 +679,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
         if is_prores:
             codec_info = "ProRes 422 Proxy (.mov) - Lossless"
             encoder_info = "🎯 Lossless Concatenation"
-        elif use_nvenc:
+        elif use_hwenc:
             codec_info = f"{gpu_encoder.upper()} (.mp4)"
             encoder_info = f"⚡ {gpu_encoder.upper()}"
         else:
@@ -685,7 +689,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
         total_cuts = len(selected_beats) - 1
         sections_info = beat_info.get('selection_info', [])
         total_processing_seconds = time.perf_counter() - total_started
-        processing_label = gpu_encoder.upper() if use_nvenc else ("PRORES_PROXY" if is_prores else "H264_CPU")
+        processing_label = gpu_encoder.upper() if use_hwenc else ("PRORES_PROXY" if is_prores else "H264_CPU")
         
         status_msg = get_success_message_auto(
             total_cuts, len(beat_times),
@@ -1190,7 +1194,7 @@ def _default_settings_state() -> dict:
     return {
         'audio': None, 'videos': [], 'video_folder': None, 'first_video': None, 'last_video': None,
         'output_filename': 'music_video.mp4',
-        'processing_mode': 'h264_nvenc' if NVENC_AVAILABLE else 'cpu',
+        'processing_mode': 'h264_nvenc' if NVENC_AVAILABLE else ('h264_amf' if AMF_AVAILABLE else 'cpu'),
         'custom_fps': None,
         'strict_mode': True,
         'edge_buffer_seconds': 2.0,
@@ -1443,6 +1447,8 @@ def create_ui() -> gr.Blocks:
                     gr.Markdown(f'### 🎬 Processing Mode')
                     if NVENC_AVAILABLE:
                         processing_mode = gr.Radio(choices=[('NVIDIA NVENC H.264', 'h264_nvenc'), ('NVIDIA NVENC HEVC (H.265)', 'hevc_nvenc'), ('CPU (H.264)', 'cpu'), ('ProRes 422 Proxy (Precise Mode)', 'prores_proxy')], value='h264_nvenc', label=LABEL_PROCESSING_MODE, info=get_processing_mode_info_nvenc())
+                    elif AMF_AVAILABLE:
+                        processing_mode = gr.Radio(choices=[('AMD AMF H.264', 'h264_amf'), ('AMD AMF HEVC (H.265)', 'hevc_amf'), ('CPU (H.264)', 'cpu'), ('ProRes 422 Proxy (Precise Mode)', 'prores_proxy')], value='h264_amf', label=LABEL_PROCESSING_MODE, info=get_processing_mode_info_amf())
                     else:
                         processing_mode = gr.Radio(choices=[('CPU (H.264)', 'cpu'), ('ProRes 422 Proxy (Precise Mode)', 'prores_proxy')], value='cpu', label=LABEL_PROCESSING_MODE, info=get_processing_mode_info_cpu())
                 

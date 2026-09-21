@@ -460,6 +460,10 @@ def get_processing_mode_info_nvenc():
     """Processing mode info with NVENC."""
     return 'GPU (NVENC): High quality | CPU: High quality | ProRes: Max quality'
 
+def get_processing_mode_info_amf():
+    """Processing mode info with AMD AMF."""
+    return 'GPU (AMF): High quality | CPU: High quality | ProRes: Max quality'
+
 def get_processing_mode_info_cpu():
     """Processing mode info without NVENC."""
     return 'CPU: H.264 encoding | ProRes: Max quality (NVENC not available)'

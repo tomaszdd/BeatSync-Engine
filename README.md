@@ -155,6 +155,26 @@ overall throughput on image-heavy projects is **dramatically faster** than a nai
 *   Fallback clip-sequence logic checks for non-empty segment durations before pinning the last video.
 *   Added `.gitignore` for `__pycache__` directories.
 
+### 🟥 AMD AMF hardware encoding
+
+*   On top of NVENC, this fork also detects and uses **AMD's AMF encoder**
+    (`h264_amf` / `hevc_amf`) when the bundled/system FFmpeg build reports support for it
+    (`check_amf()` in `logger.py`, mirroring the existing `check_nvenc()` check). No AMD-specific
+    setup is required beyond an FFmpeg build with AMF support (gyan.dev and BtbN Windows builds
+    both ship it).
+*   When an AMD GPU with AMF is detected and no NVIDIA/NVENC GPU is present, the **Processing
+    Mode** panel offers **AMD AMF H.264** and **AMD AMF HEVC (H.265)** alongside CPU and ProRes,
+    the same way it does for NVENC.
+*   AMF exports use their own quality-args builder (`get_amf_quality_args` in
+    `ffmpeg_processing.py`) tuned for AMF's flag set (`-quality`, `-rc vbr_peak`, `-qp_i`/`-qp_p`,
+    `-usage transcoding`), since AMF does not understand NVENC-only flags like `-cq`,
+    `-multipass`, `-spatial_aq`/`-temporal_aq`, `-rc-lookahead`, or `-b_ref_mode`.
+*   **CuPy/CUDA analysis acceleration remains NVIDIA-only.** AMD GPUs have no CUDA and cannot
+    run CuPy, so on an AMD-only machine beat/video analysis always runs on CPU — only the final
+    render/export step is GPU-accelerated via AMF. Don't expect full NVIDIA-setup parity; this
+    is encoder-only support, added alongside NVENC without changing NVENC behavior on NVIDIA
+    systems.
+
 ---
 
 ## 📦 Portable Folder Layout

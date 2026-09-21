@@ -30,6 +30,7 @@ from gpu_cpu_utils import (
     GPU_INFO as gpu_info,
     GPU_AVAILABLE,
     NVENC_AVAILABLE,
+    AMF_AVAILABLE,
     set_gpu_mode,
 )
 from paths import (
@@ -934,8 +935,14 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         
     print(f"📁 Processing directory: {session_temp_dir}")
 
-    # Determine processing mode
-    use_nvenc = use_gpu and NVENC_AVAILABLE and not lossless_mode and gpu_encoder != 'none'
+    # Determine processing mode. use_nvenc means "use a hardware encoder" here --
+    # NVENC and AMF are both dispatched through this same flag (see ffmpeg_processing.py).
+    # Deliberately independent of use_gpu (CuPy/CUDA analysis acceleration): an AMD
+    # box has no CUDA and so is never GPU_AVAILABLE, but can still hardware-encode via AMF.
+    use_nvenc = not lossless_mode and (
+        (gpu_encoder in ('h264_nvenc', 'hevc_nvenc') and NVENC_AVAILABLE) or
+        (gpu_encoder in ('h264_amf', 'hevc_amf') and AMF_AVAILABLE)
+    )
     requested_workers = max_workers
     max_workers = _effective_clip_workers(max_workers, use_nvenc)
     render_info = beat_info.setdefault("render_info", {}) if isinstance(beat_info, dict) else {}
@@ -1208,7 +1215,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         print(f"   Parallel workers: {max_workers}")
         print(f"   Frame-accurate: ENABLED")
         if use_nvenc:
-            print(f"   Encoder: ⚡ NVIDIA {gpu_encoder.upper()} (GPU-accelerated)")
+            print(f"   Encoder: ⚡ {gpu_encoder.upper()} (GPU-accelerated)")
         else:
             print(f"   Encoder: 💻 libx264 (CPU)")
         print(f"{'='*60}\n")

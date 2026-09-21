@@ -6,7 +6,7 @@ import os
 
 import numpy as np
 
-from logger import get_gpu_info, check_nvenc, setup_environment
+from logger import get_gpu_info, check_nvenc, check_amf, setup_environment
 
 
 CPU_COUNT = multiprocessing.cpu_count()
@@ -44,6 +44,7 @@ else:
     cp = None
 
 NVENC_AVAILABLE = check_nvenc()
+AMF_AVAILABLE = check_amf()
 USE_GPU = False
 
 

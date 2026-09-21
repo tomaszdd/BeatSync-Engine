@@ -140,6 +140,29 @@ def get_nvenc_quality_args(gpu_encoder: str, include_pix_fmt: bool = True) -> Li
     return args
 
 
+def get_amf_quality_args(gpu_encoder: str, include_pix_fmt: bool = True) -> List[str]:
+    """Return high-quality AMD AMF settings for H.264/HEVC exports."""
+    args = [
+        '-c:v', gpu_encoder,
+        '-quality', 'quality',
+        '-rc', 'vbr_peak',
+        '-qp_i', '18',
+        '-qp_p', '20',
+        '-b:v', '0',
+        '-usage', 'transcoding',
+    ]
+
+    if gpu_encoder == 'h264_amf':
+        args.extend(['-profile:v', 'high'])
+    elif gpu_encoder == 'hevc_amf':
+        args.extend(['-profile:v', 'main'])
+
+    if include_pix_fmt:
+        args.extend(['-pix_fmt', 'yuv420p'])
+
+    return args
+
+
 def get_cpu_h264_quality_args(include_pix_fmt: bool = True, threads: int | None = None) -> List[str]:
     """Return lossless CPU H.264 settings."""
     args = [
@@ -273,7 +296,10 @@ def create_looping_image_video(image_file: str, output_file: str, duration: floa
         # Exact reproduction is required before the ProRes conversion step.
         cmd.extend(['-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-crf', '0', '-pix_fmt', 'yuv420p'])
     elif use_nvenc:
-        cmd.extend(get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
+        if gpu_encoder in ('h264_nvenc', 'hevc_nvenc'):
+            cmd.extend(get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
+        elif gpu_encoder in ('h264_amf', 'hevc_amf'):
+            cmd.extend(get_amf_quality_args(gpu_encoder, include_pix_fmt=True))
     else:
         # This intermediate gets re-encoded again during clip extraction, so lossy is fine and much faster.
         cmd.extend(['-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'stillimage', '-crf', '16', '-pix_fmt', 'yuv420p'])
@@ -455,7 +481,10 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
     if output_file.lower().endswith('.mov'):
         cmd.extend(['-c:v', 'prores', '-profile:v', '0', '-vendor', 'apl0', '-pix_fmt', 'yuv422p10le'])
     elif use_nvenc:
-        cmd.extend(get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
+        if gpu_encoder in ('h264_nvenc', 'hevc_nvenc'):
+            cmd.extend(get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
+        elif gpu_encoder in ('h264_amf', 'hevc_amf'):
+            cmd.extend(get_amf_quality_args(gpu_encoder, include_pix_fmt=True))
     else:
         cmd.extend(get_cpu_h264_quality_args(include_pix_fmt=True))
     if audio_filters:
@@ -571,8 +600,10 @@ def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: fl
         # Build FFmpeg command
         cmd = [FFMPEG_PATH]
         
-        # Hardware acceleration
-        if use_nvenc:
+        # Hardware acceleration. CUDA decode hwaccel is NVIDIA-specific, so gate it on
+        # the NVENC family specifically -- AMF exports fall through to generic 'auto'
+        # decode hwaccel like the CPU path does.
+        if use_nvenc and gpu_encoder in ('h264_nvenc', 'hevc_nvenc'):
             cmd.extend(['-hwaccel', 'cuda'])
         elif hwaccel:
             cmd.extend(['-hwaccel', 'auto'])
@@ -594,7 +625,10 @@ def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: fl
         
         # Video encoding
         if use_nvenc:
-            cmd.extend(get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
+            if gpu_encoder in ('h264_nvenc', 'hevc_nvenc'):
+                cmd.extend(get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
+            elif gpu_encoder in ('h264_amf', 'hevc_amf'):
+                cmd.extend(get_amf_quality_args(gpu_encoder, include_pix_fmt=True))
         else:
             cmd.extend(get_cpu_h264_quality_args(include_pix_fmt=True, threads=threads))
         
@@ -855,23 +889,28 @@ def concatenate_videos_ffmpeg(video_files: List[str], output_file: str,
             encode_started = time.perf_counter()
             cmd = [FFMPEG_PATH]
             
-            if use_nvenc:
+            # CUDA decode hwaccel is NVIDIA-specific; AMF exports fall through to
+            # generic 'auto' decode hwaccel like the CPU path does.
+            if use_nvenc and gpu_encoder in ('h264_nvenc', 'hevc_nvenc'):
                 cmd.extend(['-hwaccel', 'cuda'])
             else:
                 cmd.extend(['-hwaccel', 'auto'])
-            
+
             cmd.extend([
                 '-f', 'concat',
                 '-safe', '0',
                 '-i', concat_file
             ])
-            
+
             add_audio_input(cmd)
             if audio_file:
                 cmd.extend(['-map', '0:v', '-map', '1:a'])
-            
+
             if use_nvenc:
-                cmd.extend(get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
+                if gpu_encoder in ('h264_nvenc', 'hevc_nvenc'):
+                    cmd.extend(get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
+                elif gpu_encoder in ('h264_amf', 'hevc_amf'):
+                    cmd.extend(get_amf_quality_args(gpu_encoder, include_pix_fmt=True))
             else:
                 cmd.extend(get_cpu_h264_quality_args(include_pix_fmt=True))
             

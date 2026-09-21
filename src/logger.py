@@ -140,6 +140,15 @@ def check_nvenc() -> bool:
     except Exception:
         return False
 
+def check_amf() -> bool:
+    """Check if FFmpeg supports AMD hardware encoding (AMF)."""
+    try:
+        cmd = [FFMPEG_EXE if FFMPEG_FOUND else 'ffmpeg', '-encoders']
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        return 'h264_amf' in result.stdout
+    except Exception:
+        return False
+
 # ============================================================================
 # LOGGING & OUTPUT
 # ============================================================================
@@ -152,6 +161,7 @@ def print_startup_banner():
 
     gpu = get_gpu_info()
     nvenc = check_nvenc()
+    amf = check_amf()
     cpu_count = CPU_COUNT
     
     print(CONSOLE_SEPARATOR)
@@ -169,7 +179,7 @@ def print_startup_banner():
         print(f"   CUDA: {cuda_type} | GPU: Not available (CPU only)")
         
     ffmpeg_type = "Portable" if FFMPEG_FOUND else "System"
-    print(f"   FFmpeg: {ffmpeg_type} | NVENC: {'[OK]' if nvenc else '[NO]'}")
+    print(f"   FFmpeg: {ffmpeg_type} | NVENC: {'[OK]' if nvenc else '[NO]'} | AMF: {'[OK]' if amf else '[NO]'}")
     print(f"   CPU Optimization: {cpu_count} threads detected")
     print(f"   Librosa: {librosa.__version__}")
     print(CONSOLE_SEPARATOR + "\n")
