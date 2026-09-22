@@ -42,7 +42,11 @@ things:
 Parse with a GPMF library rather than hand-rolling the binary KLV format (it's a real,
 somewhat fiddly nested format) — check for an existing well-maintained Python option
 first (e.g. a `gpmf`/`gopro-telemetry`-equivalent package) before writing a parser from
-scratch. This layer needs **no frame decode and no ML inference at all** — computed once
+scratch. `progweb/gpx2video` (GitHub) is built for a different purpose (rendering
+telemetry overlays onto video, not content analysis) but its GPMF extraction/parsing
+code is worth reading as a reference for the extraction mechanics specifically — don't
+pull in its overlay-rendering feature, just the parsing approach if it's cleaner than
+alternatives found. This layer needs **no frame decode and no ML inference at all** — computed once
 per source video from the metadata track alongside the existing scene-boundary detection
 in `analyze_video_sources()` (~line 272), then looked up per candidate window by
 timestamp. Store as `telemetry_pointed_down` (bool/confidence) and `telemetry_jerk_score`
