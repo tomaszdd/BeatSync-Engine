@@ -1,7 +1,7 @@
 # Task: filter out no-subject / pocket / floor shots from candidate selection
 
 ## Problem
-Reported by Tomasz after a real render (`output/music_video_20260922_171820.plan.json`,
+Reported by the project owner after a real render (`output/music_video_20260922_171820.plan.json`,
 GoPro footage from a family event): the final video includes "dead" shots — floor, and
 clips clearly filmed from inside a pocket — mixed in with real footage of people.
 
@@ -56,8 +56,8 @@ how sharp/well-lit it is.
 
 ## Explicitly NOT in scope for this task
 Do **not** default to calling an external vision API (Claude/GPT/etc.) for this. This
-pipeline runs on Tomasz's own personal/family footage — routing
-frames through a third-party cloud API is a privacy decision only he should opt into
+pipeline runs on the project owner's own personal/family footage — routing
+frames through a third-party cloud API is a privacy decision only they should opt into
 explicitly, and the local Qwen path already covers the same capability for free. If you
 believe local-model accuracy is insufficient after testing, stop and flag it in the
 report rather than wiring in a cloud call — don't add one silently.
@@ -67,7 +67,7 @@ Past changes to this repo that were "should work"/syntax-checked but not run on 
 hardware have hidden real bugs each time (DXVA2 `-hwaccel auto` crash, Gradio `.input()`
 API mismatch, NVENC false-positive that silently hid the AMD option entirely). Test this
 change against a real source folder containing obvious pocket/floor shots (the footage
-that surfaced this bug — ask Tomasz for the current folder path) with the new filter
+that surfaced this bug — ask the project owner for the current folder path) with the new filter
 enabled, and confirm via the render's
 `.plan.json` that pocket/floor-tagged candidates are actually excluded/down-ranked while
 genuine people-shots are not accidentally dropped too. Report false-positive/false-negative

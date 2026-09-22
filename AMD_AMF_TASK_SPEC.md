@@ -4,7 +4,7 @@
 This repo (`tomaszdd/BeatSync-Engine`) is a fork of `xpix/BeatSync-Engine`, which is
 itself a fork of `Merserk/BeatSync-Engine`. It currently only supports NVIDIA hardware
 encoding (`h264_nvenc`/`hevc_nvenc`) and CuPy/CUDA-accelerated audio-visual analysis.
-Tomasz's target machine (a mini PC on his network) has an **AMD Radeon 780M iGPU**
+the project owner's target machine (a mini PC on their network) has an **AMD Radeon 780M iGPU**
 (RDNA3), which has no CUDA and cannot use CuPy — but it DOES support FFmpeg's AMF
 hardware encoder (`h264_amf`/`hevc_amf`), which most modern FFmpeg Windows builds
 (including gyan.dev/BtbN builds) ship with when built against AMD's AMF SDK.
@@ -181,6 +181,6 @@ acceleration remains NVIDIA/CUDA-only (AMD GPUs get CPU-only analysis, GPU-accel
   (option a or b and why), whether it builds/imports cleanly (run
   `python -c "import ast; [ast.parse(open(f).read()) for f in ['src/logger.py','src/gpu_cpu_utils.py','src/ffmpeg_processing.py','src/gui.py']]"`
   from the repo root as a basic syntax sanity check since there's no Windows/ffmpeg
-  environment here to actually run it), and any open questions/risks for Tomasz to
+  environment here to actually run it), and any open questions/risks for the project owner to
   check when he actually runs this on the AMD box (there is no way to test AMF
   encoding from this Linux dev environment — flag that clearly).

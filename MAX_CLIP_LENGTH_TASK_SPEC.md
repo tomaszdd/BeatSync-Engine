@@ -1,8 +1,8 @@
 # Task: add a configurable max clip/segment length
 
 ## Problem
-Tomasz reported a render where a clip "stretched to the music" — one shot held on screen
-for a long time — rather than the music being cut to match the clip.
+The project owner reported a render where a clip "stretched to the music" — one shot held
+on screen for a long time — rather than the music being cut to match the clip.
 
 Investigated the most recent render's plan (`music_video_20260922_171820.plan.json`): in
 that specific render every clip's `final_duration` exactly equals its `source_duration`
@@ -12,9 +12,9 @@ across `src/*.py` that **no `max_clip_length`/`max_segment_duration` setting exi
 anywhere in the app** — nothing currently caps how long a single continuous shot can be
 held. On a track with a sparser/slower section (large gaps between detected beats), the
 whole inter-beat gap becomes one segment with no upper bound, and one clip fills the
-entire gap. Whether this specifically produced the "station" example needs reproducing
-on the actual source render Tomasz saw it in — ask him which output/audio track if not
-obvious from `output/` folder timestamps.
+entire gap. Whether this specifically produced the reported example needs reproducing
+on the actual source render it was seen in — ask the project owner which output/audio
+track if not obvious from `output/` folder timestamps.
 
 ## Fix
 Add a `max_clip_seconds` setting (numeric input in the GUI, default blank/uncapped =

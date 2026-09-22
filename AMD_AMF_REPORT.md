@@ -16,10 +16,10 @@
 
 ## Deviation from the spec's file list: `src/video_processor.py`
 
-The spec's "Files you'll touch" list didn't include `src/video_processor.py`, but two bugs there would have made the feature **completely non-functional** on Tomasz's actual target machine if left alone, so I fixed them:
+The spec's "Files you'll touch" list didn't include `src/video_processor.py`, but two bugs there would have made the feature **completely non-functional** on the project owner's actual target machine if left alone, so I fixed them:
 
 1. **`create_music_video()` recomputes its own `use_nvenc` flag internally**, independent of the flag `gui.py` computes. It was gated on `NVENC_AVAILABLE` only — AMF-mode renders would have silently fallen back to CPU encoding even though the GUI said "AMD AMF". Fixed by broadening the same family-check logic used in `gui.py`.
-2. **That same internal flag was also gated on `use_gpu`**, which is `GPU_AVAILABLE` (CuPy/CUDA) set in `gui.py`. Per the task's own context, Tomasz's AMD Radeon 780M has no CUDA, so `GPU_AVAILABLE`/`use_gpu` will always be `False` there — multiplying the hw-encode gate by `use_gpu` would have permanently disabled AMF regardless of the other fixes. I removed that dependency; hardware-encoder selection is now driven purely by `gpu_encoder` family + `NVENC_AVAILABLE`/`AMF_AVAILABLE`, decoupled from the CuPy analysis path (which stays exactly as scoped — CUDA-only, untouched).
+2. **That same internal flag was also gated on `use_gpu`**, which is `GPU_AVAILABLE` (CuPy/CUDA) set in `gui.py`. Per the task's own context, the project owner's AMD Radeon 780M has no CUDA, so `GPU_AVAILABLE`/`use_gpu` will always be `False` there — multiplying the hw-encode gate by `use_gpu` would have permanently disabled AMF regardless of the other fixes. I removed that dependency; hardware-encoder selection is now driven purely by `gpu_encoder` family + `NVENC_AVAILABLE`/`AMF_AVAILABLE`, decoupled from the CuPy analysis path (which stays exactly as scoped — CUDA-only, untouched).
 
 I judged this safe under the "don't weaken NVENC" constraint: for an NVIDIA machine, `GPU_AVAILABLE` is essentially always `True` when NVENC is, so removing that factor is a no-op there (or a strict widening, not a narrowing) — it cannot disable NVENC in any case where it previously worked.
 
@@ -49,7 +49,7 @@ for f in files:
 ```
 All six touched Python files parsed cleanly (the spec asked to check the original four; I added `video_processor.py` and `ui_content.py` since I touched them too).
 
-## Open questions / risks for Tomasz to verify on the AMD box
+## Open questions / risks for the project owner to verify on the AMD box
 
 There is no Windows/FFmpeg/AMD environment on this dev machine, so **none of this has been run against a real AMF encoder** — only reasoned through and syntax-checked. Please verify on the 780M box:
 
