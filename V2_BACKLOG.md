@@ -43,6 +43,14 @@ infrastructure, not a small add-on:
   Creator account plus app review; TikTok's Content Posting API is also partner-gated).
   Don't assume feasibility parity with YouTube — investigate access requirements before
   committing to scope, and it may not be realistically buildable as a personal project.
+  There are unofficial libraries (e.g. `instagrapi`, a private-API wrapper) that bypass
+  the official Graph API restrictions — **project owner flagged real risk here**:
+  automating via a reverse-engineered private API violates Instagram's ToS and is a known
+  way to get an account soft-banned/action-blocked (temporary posting/engagement
+  restrictions) or worse. Don't build against an unofficial API for a real personal
+  account without accepting that risk explicitly — if this is ever picked up, default to
+  the official Graph API route despite the extra approval friction, not `instagrapi` or
+  similar.
 
 ## 4. AI vertical reframe ("Instagram cut") — the "proper AI task"
 Take a landscape/wide source edit and produce a 9:16 vertical crop that pans/tracks to
