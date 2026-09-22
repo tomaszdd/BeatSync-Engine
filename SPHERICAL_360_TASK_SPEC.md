@@ -57,8 +57,8 @@ review is not enough, CAO's own prior report on this repo was correct to flag "c
 verify without a real run" and that mattered — a real bug (`-hwaccel auto` DXVA2 crash)
 was only found by actually rendering. For this task:
 - Test on the UM890 (`ssh um890`, AMD Radeon 780M box this repo is verified against).
-- Need a real equirectangular 360 test file. Check `D:\Photos\360 Photos & Videos\GoPro Max\`
-  on the UM890 for existing GoPro Max footage first. If those are raw dual-fisheye `.360`
+- Need a real equirectangular 360 test file. Check the existing 360/GoPro Max footage
+  library on the UM890 first. If those are raw dual-fisheye `.360`
   files rather than already-stitched equirectangular MP4s, flag that clearly in the report
   rather than guessing — stitching is a separate prerequisite this task should NOT attempt
   to solve, just note if it's blocking a real test.
