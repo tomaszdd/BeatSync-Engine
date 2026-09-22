@@ -38,19 +38,43 @@ infrastructure, not a small add-on:
   consent screen + stored refresh token. Default the upload visibility to
   **unlisted or private**, never public, given this renders personal/family footage —
   that's a deliberate default to set, not an afterthought.
-- **Instagram/TikTok**: significantly harder. Both gate programmatic upload behind
-  business/creator-account API partnerships (Instagram Graph API requires a Business or
-  Creator account plus app review; TikTok's Content Posting API is also partner-gated).
-  Don't assume feasibility parity with YouTube — investigate access requirements before
-  committing to scope, and it may not be realistically buildable as a personal project.
-  There are unofficial libraries (e.g. `instagrapi`, a private-API wrapper) that bypass
-  the official Graph API restrictions — **project owner flagged real risk here**:
-  automating via a reverse-engineered private API violates Instagram's ToS and is a known
-  way to get an account soft-banned/action-blocked (temporary posting/engagement
-  restrictions) or worse. Don't build against an unofficial API for a real personal
-  account without accepting that risk explicitly — if this is ever picked up, default to
-  the official Graph API route despite the extra approval friction, not `instagrapi` or
-  similar.
+- **Instagram (official Graph API — researched 2026-09-22)**: more feasible than first
+  assumed, with real caveats:
+  - **Account type**: must be a Business or Creator account, not a regular personal one —
+    converting is free but changes account behaviour (public insights, contact buttons,
+    etc.). Real tradeoff to weigh, not just a technical checkbox.
+  - **App Review is only required for managing *other people's* accounts.** For posting
+    to your own single account, dev/test-mode access appears sufficient — no formal
+    Meta review needed. This meaningfully lowers the barrier for a personal-use case.
+  - **Two auth pathways**: newer "Instagram Login" (`instagram_business_basic` +
+    `instagram_business_content_publish`, no linked Facebook Page needed) vs. older
+    "Facebook Login" (needs a linked FB Page + `instagram_content_publish` etc.) —
+    Instagram Login is the simpler one for a personal account with no interest in
+    Facebook Page management.
+  - **Workflow**: create a media container (`POST /media` with `video_url`,
+    `media_type=REELS`/`VIDEO`/`STORIES`) → publish (`POST /media_publish`). The video
+    must be at a **publicly reachable URL** for Meta's servers to fetch — the UM890's
+    rendered output would need temporary public hosting (cloud bucket, or exposing
+    something from here), not a direct file upload. Real infra piece, not just an API call.
+  - **Rate limits**: 100 API-published posts/24h globally, but *also* capped at
+    `4800 × (account impressions / 1000)` per 24h — for a low-follower personal account
+    this could be the tighter real-world limit, not the flat 100.
+  - **Token maintenance**: long-lived tokens expire every 60 days and need active
+    refresh — an ongoing maintenance burden, the same class of problem as the recurring
+    HA-token-staleness issue already seen elsewhere on this network. Budget for that if
+    this gets built, don't let it silently go stale.
+  - Net: Instagram via the **official** API is a real, buildable option — safer than
+    `instagrapi` (see below) and not blocked on Meta approval for personal-account use.
+    The public-hosting requirement and token upkeep are the actual costs.
+  - Sources: [Content Publishing — Meta for Developers](https://developers.facebook.com/docs/instagram-platform/content-publishing/), [Instagram Platform API implementation guide](https://gist.github.com/PrenSJ2/0213e60e834e66b7e09f7f93999163fc)
+  - **TikTok**: not researched in this pass — Content Posting API is understood to be
+    partner-gated similarly to Instagram's old regime; check before assuming parity.
+  - **Unofficial libraries** (e.g. `instagrapi`, a private-API wrapper): **project owner
+    flagged real risk here** — automating via a reverse-engineered private API violates
+    Instagram's ToS and is a known way to get an account soft-banned/action-blocked, or
+    worse. Given the official API turns out workable for personal-account use anyway,
+    there's no real reason to reach for `instagrapi` here — default to the official Graph
+    API route.
 
 ## 4. AI vertical reframe ("Instagram cut") — the "proper AI task"
 Take a landscape/wide source edit and produce a 9:16 vertical crop that pans/tracks to
