@@ -1,3 +1,4 @@
+import math
 import os
 import sys
 
@@ -356,8 +357,32 @@ def _sort_video_files(video_files: Sequence[str], clip_order_mode: str) -> List[
     return files
 
 
+def _split_long_gaps(cut_times: np.ndarray, max_clip_seconds: float | None) -> np.ndarray:
+    """Insert synthetic intermediate cut points into any gap exceeding max_clip_seconds.
+
+    Mirrors the chunking approach _make_candidate_windows() (video_analysis.py)
+    uses for an over-long scene window: split the gap into the smallest number
+    of equal sub-segments that are each <= max_clip_seconds, rather than
+    holding one shot for the whole gap. None/<=0 means uncapped -- returns
+    cut_times unchanged, i.e. today's behavior.
+    """
+    if not max_clip_seconds or max_clip_seconds <= 0 or cut_times.size < 2:
+        return cut_times
+    expanded = [float(cut_times[0])]
+    for i in range(cut_times.size - 1):
+        start = float(cut_times[i])
+        end = float(cut_times[i + 1])
+        gap = end - start
+        if gap > max_clip_seconds:
+            chunks = max(1, int(math.ceil(gap / max_clip_seconds)))
+            step = gap / chunks
+            expanded.extend(start + chunk_idx * step for chunk_idx in range(1, chunks))
+        expanded.append(end)
+    return np.asarray(expanded, dtype=float)
+
+
 def build_frame_aligned_cut_timeline(beat_times: BeatTimes, audio_duration: float,
-                                     fps: float):
+                                     fps: float, max_clip_seconds: float | None = None):
     """
     Build the output cut timeline on absolute video frame numbers.
 
@@ -366,6 +391,12 @@ def build_frame_aligned_cut_timeline(beat_times: BeatTimes, audio_duration: floa
     absolute boundaries, so rounding error cannot accumulate from clip to clip.
 
     The first and last boundaries stay locked to the audio timeline.
+
+    max_clip_seconds: None/<=0 (default) is uncapped -- identical to today's
+        behavior. Above 0, any beat-to-beat gap longer than this is split into
+        multiple synthetic sub-segments (see _split_long_gaps) before frame
+        quantization, so no single continuous shot can be held longer than this
+        regardless of how sparse the beats are in that stretch of the track.
     """
     if fps <= 0:
         raise ValueError(f"Invalid FPS for cut timeline: {fps}")
@@ -382,6 +413,7 @@ def build_frame_aligned_cut_timeline(beat_times: BeatTimes, audio_duration: floa
     internal_beats = beats[(beats > 0.0) & (beats < audio_duration)]
 
     raw_cut_times = np.concatenate(([0.0], internal_beats, [audio_duration]))
+    raw_cut_times = _split_long_gaps(raw_cut_times, max_clip_seconds)
 
     # Quantize ABSOLUTE cut positions, not per-segment durations. This removes
     # cumulative drift caused by round((beat[i+1] - beat[i]) * fps) on each clip.
@@ -845,6 +877,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                       first_video: str | None = None,
                       last_video: str | None = None,
                       min_subject_confidence: float = 0.0,
+                      max_clip_seconds: float | None = None,
                       target_resolution: Tuple[int, int] | None = None,
                       start_text: str = '',
                       start_text_position: str = 'bottom_center',
@@ -890,6 +923,9 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         min_subject_confidence: 0 (default) keeps today's behavior. Above 0, the
             AV planner drops candidates the subject-detection layers agree have
             no visible subject (floor/pocket/sky shots) before scoring/selection.
+        max_clip_seconds: None/0 (default) is uncapped -- identical to today's
+            behavior. Above 0, no single continuous shot is held longer than
+            this; a sparse stretch of the track gets synthetic sub-cuts instead.
         start_text/end_text: optional titles burned into the start/end of the output
         text_font_file: .ttf used for the start/end titles
         fade_in_seconds/fade_out_seconds: length of the opening/closing black fade
@@ -991,7 +1027,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
 
     # Build one frame-locked output timeline before creating clips.
     selected_beats, segment_frames, segment_durations, dropped_boundaries = build_frame_aligned_cut_timeline(
-        beat_times, audio_duration, fps
+        beat_times, audio_duration, fps, max_clip_seconds=max_clip_seconds
     )
     total_clips = len(segment_durations)
     render_info.update({

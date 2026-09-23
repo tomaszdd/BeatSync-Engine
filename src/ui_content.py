@@ -352,6 +352,13 @@ INFO_MIN_SUBJECT_CONFIDENCE = (
     "subject (floor, pocket, sky, blank shots) are excluded — higher values are stricter."
 )
 
+LABEL_MAX_CLIP_SECONDS = "⏱️ Max clip length (seconds)"
+INFO_MAX_CLIP_SECONDS = (
+    "Leave empty for uncapped (default). Above 0, no single continuous shot is held "
+    "longer than this — a sparse stretch of the track (few beats close together) gets "
+    "extra cuts inserted instead of one long held clip."
+)
+
 LABEL_FIRST_VIDEO = "⏮️ First video"
 INFO_FIRST_VIDEO = "This video provides the very first clip in the final video."
 LABEL_LAST_VIDEO = "⏭️ Last video"

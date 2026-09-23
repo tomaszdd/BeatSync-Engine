@@ -453,6 +453,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        edge_buffer_seconds: float = 2.0,
                        clip_order_mode: str = 'auto',
                        min_subject_confidence: float = 0.0,
+                       max_clip_seconds: float | None = None,
                        first_video: str | None = None,
                        last_video: str | None = None,
                        start_text: str = '',
@@ -612,6 +613,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             edge_buffer_seconds=float(edge_buffer_seconds) if edge_buffer_seconds is not None else 2.0,
             clip_order_mode=clip_order_mode or 'auto',
             min_subject_confidence=float(min_subject_confidence) if min_subject_confidence is not None else 0.0,
+            max_clip_seconds=float(max_clip_seconds) if max_clip_seconds else None,
             first_video=_as_existing_source_path(first_video),
             last_video=_as_existing_source_path(last_video),
             target_resolution=target_resolution,
@@ -721,6 +723,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  edge_buffer_seconds: float = 2.0,
                  clip_order_mode: str = 'auto',
                  min_subject_confidence: float = 0.0,
+                 max_clip_seconds: float | None = None,
                  first_video: str | None = None,
                  last_video: str | None = None,
                  start_text: str = '',
@@ -759,6 +762,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                     edge_buffer_seconds=edge_buffer_seconds,
                     clip_order_mode=clip_order_mode,
                     min_subject_confidence=min_subject_confidence,
+                    max_clip_seconds=max_clip_seconds,
                     first_video=first_video,
                     last_video=last_video,
                     start_text=start_text,
@@ -1204,6 +1208,7 @@ def _default_settings_state() -> dict:
         'edge_buffer_seconds': 2.0,
         'clip_order_mode': 'auto',
         'min_subject_confidence': 0.0,
+        'max_clip_seconds': None,
         'start_text': '', 'start_text_position': 'bottom_center', 'start_text_duration': 3.0,
         'end_text': '', 'end_text_position': 'bottom_center', 'end_text_duration': 3.0,
         'text_font': DEFAULT_TEXT_FONT,
@@ -1305,7 +1310,7 @@ def _persist_last_video(path: str | None) -> None:
 # Keys persisted from the settings components below, in the exact order they're wired up.
 _SETTINGS_KEYS = [
     'output_filename', 'processing_mode', 'custom_fps', 'strict_mode', 'edge_buffer_seconds',
-    'clip_order_mode', 'min_subject_confidence', 'start_text', 'start_text_position', 'start_text_duration',
+    'clip_order_mode', 'min_subject_confidence', 'max_clip_seconds', 'start_text', 'start_text_position', 'start_text_duration',
     'end_text', 'end_text_position', 'end_text_duration', 'text_font',
     'fade_enabled', 'fade_duration',
 ]
@@ -1433,6 +1438,10 @@ def create_ui() -> gr.Blocks:
                         minimum=0.0, maximum=1.0, step=0.05, value=0.0,
                         label=LABEL_MIN_SUBJECT_CONFIDENCE, info=INFO_MIN_SUBJECT_CONFIDENCE
                     )
+                    max_clip_seconds = gr.Number(
+                        label=LABEL_MAX_CLIP_SECONDS, value=None, precision=1, minimum=0.0,
+                        info=INFO_MAX_CLIP_SECONDS
+                    )
                     with gr.Group():
                         gr.Markdown('#### 📝 Text Overlays')
                         start_text = gr.Textbox(label=LABEL_START_TEXT, info=INFO_START_TEXT, lines=3, max_lines=8)
@@ -1521,7 +1530,7 @@ def create_ui() -> gr.Blocks:
                 audio_input, video_input,
                 output_filename, processing_mode, custom_fps, strict_mode,
                 session_state, video_folder_input, edge_buffer_seconds, clip_order_mode,
-                min_subject_confidence,
+                min_subject_confidence, max_clip_seconds,
                 first_video_input, last_video_input,
                 start_text, start_text_position, start_text_duration,
                 end_text, end_text_position, end_text_duration, text_font,
@@ -1629,7 +1638,7 @@ def create_ui() -> gr.Blocks:
 
         _settings_components = [
             output_filename, processing_mode, custom_fps, strict_mode, edge_buffer_seconds,
-            clip_order_mode, min_subject_confidence, start_text, start_text_position, start_text_duration,
+            clip_order_mode, min_subject_confidence, max_clip_seconds, start_text, start_text_position, start_text_duration,
             end_text, end_text_position, end_text_duration, text_font,
             fade_enabled, fade_duration,
         ]
