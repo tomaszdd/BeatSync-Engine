@@ -91,7 +91,10 @@ CONFIG = AutoWaveConfig()
 
 
 from typing import Callable, Dict, List, Tuple
-import librosa
+try:
+    import librosa
+except ImportError:
+    librosa = None
 import numpy as np
 from gpu_cpu_utils import GPU_AVAILABLE, clear_gpu_memory
 

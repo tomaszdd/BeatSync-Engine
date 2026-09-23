@@ -2,7 +2,10 @@
 """Stage 1: load-facing beat grid detection."""
 
 from typing import Tuple
-import librosa
+try:
+    import librosa
+except ImportError:
+    librosa = None
 import numpy as np
 
 from . import AutoWaveConfig

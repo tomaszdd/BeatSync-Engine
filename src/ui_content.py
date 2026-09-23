@@ -384,6 +384,12 @@ LABEL_FADE_ENABLED = "🎬 Fade in/out (fade to black)"
 INFO_FADE_ENABLED = "Fade video and audio in from black at the start and out to black at the end. Start/end text fades in and out together with the black fade."
 LABEL_FADE_DURATION = "Fade duration (seconds)"
 
+LABEL_TRANSITIONS_ENABLED = "🔀 Beat-matched transitions"
+INFO_TRANSITIONS_ENABLED = "Smooth crossfades on weaker beats, keeping punchy hard cuts on strong beats (≥88th percentile impact)."
+
+LABEL_TITLE_CARD_ENABLED = "✨ Blur-to-sharp title card"
+INFO_TITLE_CARD_ENABLED = "Opening title card: footage starts blurred and dimmed under title text, then smoothly resolves to sharp video."
+
 WINDOWS_FONTS_DIR = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')
 
 # (display label, browser-preview CSS font stack, filename in the Windows fonts dir)

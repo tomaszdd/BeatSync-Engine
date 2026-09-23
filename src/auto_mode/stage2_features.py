@@ -2,7 +2,10 @@
 """Stage 2: beat-synchronous energy wave and rhythm feature extraction."""
 
 from typing import Dict, Tuple
-import librosa
+try:
+    import librosa
+except ImportError:
+    librosa = None
 import numpy as np
 
 from gpu_cpu_utils import GPU_AVAILABLE, cp

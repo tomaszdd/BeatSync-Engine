@@ -7,9 +7,17 @@ import hashlib
 import os
 import random
 from collections import Counter, deque
-from typing import Dict, List, Sequence
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
+
+try:
+    from . import _safe_percentile
+except Exception:
+    def _safe_percentile(values, percentile, default=0.0):
+        arr = np.asarray(values, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        return float(np.percentile(arr, percentile)) if arr.size else default
 
 try:
     # src/ is on sys.path once the auto_mode package is imported (see __init__.py).
@@ -1315,3 +1323,121 @@ def _materialize_clip(
         "wave": profile.get("wave"),
         "impact": profile.get("impact"),
     }
+
+
+DEFAULT_TRANSITION_DURATION = 0.35
+
+
+def compute_beat_transitions(
+    planned_clip_sequence: Sequence[Dict] | None = None,
+    segment_durations: Sequence[float] = (),
+    beat_info: Dict | None = None,
+    default_crossfade_duration: float = DEFAULT_TRANSITION_DURATION,
+    strong_percentile: float = 88.0,
+    transitions_enabled: bool = True,
+    cut_times: Sequence[float] | None = None,
+) -> List[float | None]:
+    """Compute transition at each internal cut boundary between consecutive clips.
+
+    Returns a list of length len(segment_durations) - 1.
+    Each entry corresponds to the cut boundary between clip i - 1 and clip i:
+    - None indicates a punchy hard cut (selected for strong beats >= 88th percentile impact).
+    - A positive float indicates a crossfade/dissolve duration in seconds (weaker beats).
+
+    Audio synchronization invariant:
+    Transitions are only applied at internal boundaries (never at the very first or very last
+    boundary). The crossfade duration is safely capped relative to adjacent clip durations to
+    prevent overlap from exceeding clip length.
+    """
+    n = len(segment_durations)
+    if n <= 1:
+        return []
+
+    if not transitions_enabled:
+        return [None] * (n - 1)
+
+    planned_clips = list(planned_clip_sequence or [])
+    times = np.asarray(beat_info.get("times", []) if beat_info else [], dtype=float)
+    rhythm_data = beat_info.get("rhythm_data", {}) if beat_info else {}
+    impact_strength = np.asarray(rhythm_data.get("impact_strength", []), dtype=float)
+    cut_beats = (beat_info or {}).get("cut_beats") or []
+
+    boundary_impacts: List[float] = []
+    for i in range(1, n):
+        clip = planned_clips[i] if i < len(planned_clips) else {}
+        imp = clip.get("impact")
+        if imp is None and i - 1 < len(cut_beats):
+            imp = cut_beats[i - 1].get("impact")
+
+        if imp is not None:
+            try:
+                boundary_impacts.append(float(imp))
+                continue
+            except (TypeError, ValueError):
+                pass
+
+        # Fallback: interpolate impact score from rhythm data at clip's audio start
+        start_time = float(clip.get("audio_start", 0.0))
+        if start_time == 0.0 and cut_times and i < len(cut_times):
+            start_time = float(cut_times[i])
+        if times.size > 0 and impact_strength.size == times.size:
+            boundary_impacts.append(_interp_feature(start_time, times, impact_strength, 0.5))
+        else:
+            boundary_impacts.append(0.5)
+
+    arr = np.asarray(boundary_impacts, dtype=float)
+    if times.size > 0 and impact_strength.size == times.size:
+        strong_threshold = _safe_percentile(impact_strength, strong_percentile, default=0.88)
+    elif arr.size >= 5:
+        strong_threshold = max(0.65, _safe_percentile(arr, strong_percentile, default=0.88))
+    else:
+        strong_threshold = 0.88
+
+    transitions: List[float | None] = []
+    for i in range(1, n):
+        imp = boundary_impacts[i - 1]
+        if imp >= strong_threshold:
+            # Strong musical impact: retain punchy hard cut
+            transitions.append(None)
+        else:
+            # Weaker beat: apply smooth crossfade
+            prev_d = float(segment_durations[i - 1])
+            curr_d = float(segment_durations[i])
+            max_allowed = min(prev_d, curr_d) * 0.45
+            if max_allowed < 0.12:
+                # Segment too short to absorb crossfade overlap safely
+                transitions.append(None)
+            else:
+                d = round(min(default_crossfade_duration, max_allowed), 3)
+                transitions.append(d)
+
+    return transitions
+
+
+def compute_clip_handles(
+    segment_durations: Sequence[float],
+    transitions: Sequence[float | None] | None,
+) -> Tuple[List[float], List[float]]:
+    """Compute in_handle and out_handle for each clip to preserve frame-accurate audio sync.
+
+    For clip i:
+    - in_handle: extra footage required before the segment start for incoming crossfade (D_i / 2)
+    - out_handle: extra footage required after the segment end for outgoing crossfade (D_{i+1} / 2)
+    
+    Returns (in_handles, out_handles), each matching the length of segment_durations.
+    """
+    n = len(segment_durations)
+    in_handles = [0.0] * n
+    out_handles = [0.0] * n
+    if transitions is None or len(transitions) == 0:
+        return in_handles, out_handles
+
+    for i in range(1, n):
+        t = transitions[i - 1] if i - 1 < len(transitions) else None
+        if t and t > 0:
+            half = round(t / 2.0, 4)
+            out_handles[i - 1] = half
+            in_handles[i] = half
+
+    return in_handles, out_handles
+

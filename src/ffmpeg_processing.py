@@ -19,7 +19,7 @@ import random
 import shutil
 import uuid
 import re
-from typing import Tuple, List
+from typing import Tuple, List, Sequence, Dict, Any, Optional
 
 
 from logger import (
@@ -34,6 +34,15 @@ setup_environment()
 
 # Set up FFPROBE_PATH based on FFMPEG_PATH
 FFPROBE_PATH = FFMPEG_PATH.replace('ffmpeg.exe', 'ffprobe.exe')
+if not os.path.exists(FFMPEG_PATH):
+    system_ffmpeg = shutil.which('ffmpeg')
+    if system_ffmpeg:
+        FFMPEG_PATH = system_ffmpeg
+if not os.path.exists(FFPROBE_PATH):
+    system_ffprobe = shutil.which('ffprobe')
+    if system_ffprobe:
+        FFPROBE_PATH = system_ffprobe
+
 
 
 NVENC_QUALITY_CQ = '1'
@@ -392,14 +401,17 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
                               end_duration: float = 3.0, use_nvenc: bool = False,
                               gpu_encoder: str = 'h264_nvenc', fps: float = 30.0,
                               font_file: str | None = None,
-                              fade_in: float = 0.0, fade_out: float = 0.0) -> str:
+                              fade_in: float = 0.0, fade_out: float = 0.0,
+                              title_card_enabled: bool = False) -> str:
     """Burn optional start/end titles and/or a black fade in/out into an assembled video.
 
-    The fade filters run *after* drawtext, so any start/end title is dimmed by the same
-    black ramp -- it fades up out of the opening blende and fades down into the closing
-    one instead of just cutting on and off. A matching audio fade is applied too.
+    If title_card_enabled is True and start_text is non-empty, applies a blur-to-sharp
+    title card opening that smoothly resolves into the sharp first clip footage.
+    Otherwise, burns standard text overlay(s).
     """
-    have_text = bool(str(start_text or '').strip() or str(end_text or '').strip())
+    start_clean = str(start_text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
+    end_clean = str(end_text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
+    have_text = bool(start_clean or end_clean)
     fade_in = max(0.0, float(fade_in or 0.0))
     fade_out = max(0.0, float(fade_out or 0.0))
     if not have_text and fade_in <= 0.0 and fade_out <= 0.0:
@@ -411,73 +423,137 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
     fade_in = min(fade_in, max(0.0, video_duration))
     fade_out = min(fade_out, max(0.0, video_duration - fade_in))
 
-    overlays = []
+    if not font_file or not os.path.isfile(font_file):
+        font_file = DEFAULT_TEXT_FONT_FILE
+    font_arg = _escape_drawtext_fontfile(font_file)
+    text_base = os.path.splitext(output_file)[0]
     temp_text_files: list[str] = []
-    if have_text:
-        if not font_file or not os.path.isfile(font_file):
-            font_file = DEFAULT_TEXT_FONT_FILE
-        font_arg = _escape_drawtext_fontfile(font_file)
-        text_base = os.path.splitext(output_file)[0]
 
-        def add_overlay(text: str, position: str, visible_from: float, visible_to: float) -> None:
-            # Keep internal line breaks, normalise CRLF, drop only outer whitespace.
-            text = str(text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
-            if not text or visible_to <= visible_from:
-                return
-            x, y = _TEXT_POSITIONS.get(position, _TEXT_POSITIONS['bottom_center'])
-            font_size = _title_font_size(text, frame_w, frame_h)
-            border_w = max(2, round(font_size / 18))
-            line_spacing = max(4, round(font_size / 10))
+    use_title_card = bool(title_card_enabled and start_clean)
+
+    def _make_text_filter(text: str, position: str, visible_from: float, visible_to: float,
+                           alpha_expr: str | None = None) -> str:
+        x, y = _TEXT_POSITIONS.get(position, _TEXT_POSITIONS['bottom_center'])
+        font_size = _title_font_size(text, frame_w, frame_h)
+        border_w = max(2, round(font_size / 18))
+        line_spacing = max(4, round(font_size / 10))
+        if alpha_expr:
+            common = (
+                f":fontcolor=white:fontsize={font_size}:borderw={border_w}:bordercolor=black:"
+                f"line_spacing={line_spacing}:x={x}:y={y}:"
+                f"alpha='{alpha_expr}':expansion=none"
+            )
+        else:
             common = (
                 f":fontcolor=white:fontsize={font_size}:borderw={border_w}:bordercolor=black:"
                 f"line_spacing={line_spacing}:x={x}:y={y}:"
                 f"enable='between(t,{visible_from:.3f},{visible_to:.3f})':expansion=none"
             )
-            # Pass the text via a UTF-8 file so real newlines become line breaks and
-            # ':' / ',' / quotes in the title need no filtergraph escaping.
-            try:
-                tf = f"{text_base}_txt_{uuid.uuid4().hex}.txt"
-                with open(tf, 'w', encoding='utf-8', newline='\n') as fh:
-                    fh.write(text)
-                temp_text_files.append(tf)
-                overlays.append(f"drawtext=fontfile='{font_arg}':textfile='{_escape_drawtext_fontfile(tf)}'{common}")
-            except OSError:
-                flat = _escape_drawtext_value(text.replace('\n', ' '))
-                overlays.append(f"drawtext=fontfile='{font_arg}':text='{flat}'{common}")
+        try:
+            tf = f"{text_base}_txt_{uuid.uuid4().hex}.txt"
+            with open(tf, 'w', encoding='utf-8', newline='\n') as fh:
+                fh.write(text)
+            temp_text_files.append(tf)
+            return f"drawtext=fontfile='{font_arg}':textfile='{_escape_drawtext_fontfile(tf)}'{common}"
+        except OSError:
+            flat = _escape_drawtext_value(text.replace('\n', ' '))
+            return f"drawtext=fontfile='{font_arg}':text='{flat}'{common}"
 
-        start_duration = max(0.0, float(start_duration or 0.0))
-        end_duration = max(0.0, float(end_duration or 0.0))
-        # Make sure a title actually covers its fade so it ramps with the blende.
-        start_visible_to = max(min(start_duration, video_duration), fade_in)
-        end_visible_from = min(max(0.0, video_duration - end_duration),
-                               max(0.0, video_duration - fade_out))
-        add_overlay(start_text, start_position, 0.0, start_visible_to)
-        add_overlay(end_text, end_position, end_visible_from, video_duration)
-
-    video_filters = list(overlays)
     audio_filters = []
     if fade_in > 0.0:
-        video_filters.append(f"fade=t=in:st=0:d={fade_in:.3f}:color=black")
         audio_filters.append(f"afade=t=in:st=0:d={fade_in:.3f}")
     if fade_out > 0.0:
         fade_out_start = max(0.0, video_duration - fade_out)
-        video_filters.append(f"fade=t=out:st={fade_out_start:.3f}:d={fade_out:.3f}:color=black")
         audio_filters.append(f"afade=t=out:st={fade_out_start:.3f}:d={fade_out:.3f}")
-    if not video_filters:
-        return output_file
+
+    start_duration = max(0.0, float(start_duration or 0.0))
+    end_duration = max(0.0, float(end_duration or 0.0))
+
+    if use_title_card:
+        # Blur-to-sharp title treatment:
+        # Opening window: ~2-3 seconds, blurred & dimmed with overlaid title, then resolving smoothly
+        window = min(float(start_duration or 2.5), float(video_duration))
+        window = max(0.8, window)
+        t_hold = round(min(1.2, window * 0.45), 3)
+        t_fade = round(window - t_hold, 3)
+
+        title_alpha = f"if(lte(t,{t_hold:.3f}),1.0,if(gte(t,{window:.3f}),0.0,({window:.3f}-t)/{t_fade:.3f}))"
+        title_filter = _make_text_filter(start_clean, start_position, 0.0, window, alpha_expr=title_alpha)
+
+        # Scale down to half-res for fast high-quality Gaussian blur, then scale back
+        blur_chain = (
+            f"scale=iw/2:ih/2,"
+            f"gblur=sigma=16:steps=2,"
+            f"eq=brightness=-0.15:contrast=0.90,"
+            f"scale={frame_w}:{frame_h}:flags=bilinear"
+        )
+        blend_expr = (
+            f"if(lte(T,{t_hold:.3f}),A,"
+            f"if(gte(T,{window:.3f}),B,"
+            f"A*(1-(T-{t_hold:.3f})/{t_fade:.3f})+B*((T-{t_hold:.3f})/{t_fade:.3f})))"
+        )
+
+        fc_parts = [
+            f"[0:v]split=2[orig][blur_in]",
+            f"[blur_in]{blur_chain}[blurred]",
+            f"[blurred][orig]blend=all_expr='{blend_expr}':enable='lte(t,{window:.3f})'[resolved]",
+            f"[resolved]{title_filter}[v_title]"
+        ]
+
+        post_filters = []
+        if fade_in > 0.0:
+            post_filters.append(f"fade=t=in:st=0:d={fade_in:.3f}:color=black")
+        if end_clean:
+            end_visible_from = min(max(0.0, video_duration - end_duration),
+                                   max(0.0, video_duration - fade_out))
+            post_filters.append(_make_text_filter(end_clean, end_position, end_visible_from, video_duration))
+        if fade_out > 0.0:
+            fade_out_start = max(0.0, video_duration - fade_out)
+            post_filters.append(f"fade=t=out:st={fade_out_start:.3f}:d={fade_out:.3f}:color=black")
+
+        if post_filters:
+            fc_parts.append(f"[v_title]{','.join(post_filters)}[v_out]")
+        else:
+            fc_parts.append(f"[v_title]null[v_out]")
+
+        filter_complex_str = "; ".join(fc_parts)
+        is_complex = True
+        desc = "blur-to-sharp title card"
+    else:
+        # Standard overlay branch
+        overlays = []
+        if start_clean:
+            start_visible_to = max(min(start_duration, video_duration), fade_in)
+            overlays.append(_make_text_filter(start_clean, start_position, 0.0, start_visible_to))
+        if end_clean:
+            end_visible_from = min(max(0.0, video_duration - end_duration),
+                                   max(0.0, video_duration - fade_out))
+            overlays.append(_make_text_filter(end_clean, end_position, end_visible_from, video_duration))
+
+        video_filters = list(overlays)
+        if fade_in > 0.0:
+            video_filters.append(f"fade=t=in:st=0:d={fade_in:.3f}:color=black")
+        if fade_out > 0.0:
+            fade_out_start = max(0.0, video_duration - fade_out)
+            video_filters.append(f"fade=t=out:st={fade_out_start:.3f}:d={fade_out:.3f}:color=black")
+
+        if not video_filters:
+            return output_file
+
+        is_complex = False
+        desc = f"{len(overlays)} text overlay(s)"
 
     base, extension = os.path.splitext(output_file)
     temp_output = f"{base}_text_overlay_{uuid.uuid4().hex}{extension}"
-    bits = []
-    if overlays:
-        bits.append(f"{len(overlays)} text overlay(s)")
+    bits = [desc]
     if fade_in > 0.0 or fade_out > 0.0:
         bits.append(f"fade in {fade_in:.2f}s / out {fade_out:.2f}s")
     print(f"   📝 Adding {', '.join(bits)}...")
-    cmd = [
-        FFMPEG_PATH, '-nostdin', '-hide_banner', '-i', output_file,
-        '-map', '0:v:0', '-map', '0:a?', '-vf', ','.join(video_filters),
-    ]
+    cmd = [FFMPEG_PATH, '-nostdin', '-hide_banner', '-i', output_file]
+    if is_complex:
+        cmd.extend(['-filter_complex', filter_complex_str, '-map', '[v_out]', '-map', '0:a?'])
+    else:
+        cmd.extend(['-map', '0:v:0', '-map', '0:a?', '-vf', ','.join(video_filters)])
     if output_file.lower().endswith('.mov'):
         cmd.extend(['-c:v', 'prores', '-profile:v', '0', '-vendor', 'apl0', '-pix_fmt', 'yuv422p10le'])
     elif use_nvenc:
@@ -592,7 +668,8 @@ def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: fl
             width, height = target_size
             filters.append(build_fit_scale_filter(width, height))
         
-        # FPS filter
+        # FPS filter with clone-mode edge padding for frame guarantee
+        filters.append("tpad=start_mode=clone:stop_mode=clone")
         filters.append(f"fps={fps}")
         
         filter_complex = ",".join(filters)
@@ -743,27 +820,167 @@ def extract_prores_segment_random(video_file: str, duration: float, fps: float,
 
     raise Exception(f"ProRes segment extraction error: {last_error}")
 
+
+DEFAULT_TRANSITION_DURATION = 0.35
+
+
+def _build_transition_filtergraph(
+    video_files: List[str],
+    transitions: Sequence[float | None],
+    segment_durations: Sequence[float],
+) -> Tuple[List[str], str]:
+    """Construct FFmpeg filtergraph inputs and filter_complex string for beat-matched transitions.
+
+    Partitions clips into blocks separated by hard cuts (where transition is None).
+    Inside each block, clips are crossfaded using xfade with exact duration and offset.
+    Blocks are then joined via concat filter, preserving exact beat positions and total duration.
+    """
+    n = len(video_files)
+    t_list = list(transitions) if transitions is not None else []
+
+    # Pre-calculate handles
+    in_handles = [0.0] * n
+    out_handles = [0.0] * n
+    for i in range(1, n):
+        t = t_list[i - 1] if i - 1 < len(t_list) else None
+        if t and t > 0:
+            half = round(t / 2.0, 4)
+            out_handles[i - 1] = half
+            in_handles[i] = half
+
+    clip_lengths = [
+        round(in_handles[i] + float(segment_durations[i]) + out_handles[i], 4)
+        for i in range(n)
+    ]
+
+    # Partition into blocks separated by hard cuts
+    blocks: List[List[int]] = []
+    current_block: List[int] = [0]
+    for i in range(1, n):
+        t = t_list[i - 1] if i - 1 < len(t_list) else None
+        if t and t > 0:
+            current_block.append(i)
+        else:
+            blocks.append(current_block)
+            current_block = [i]
+    blocks.append(current_block)
+
+    filter_chains = []
+    for b_idx, block in enumerate(blocks):
+        if len(block) == 1:
+            c = block[0]
+            filter_chains.append(f"[{c}:v]null[b{b_idx}]")
+        else:
+            c0 = block[0]
+            curr_dur = clip_lengths[c0]
+            prev_stream = f"[{c0}:v]"
+            for j in range(1, len(block)):
+                cj = block[j]
+                d = float(t_list[cj - 1])
+                offset = max(0.0, round(curr_dur - d, 4))
+                next_stream = f"[b{b_idx}]" if j == len(block) - 1 else f"[xf_{b_idx}_{j}]"
+                filter_chains.append(
+                    f"{prev_stream}[{cj}:v]xfade=transition=fade:duration={d:.3f}:offset={offset:.4f}{next_stream}"
+                )
+                prev_stream = next_stream
+                curr_dur = round(curr_dur + clip_lengths[cj] - d, 4)
+
+    if len(blocks) == 1:
+        filter_chains.append("[b0]null[outv]")
+    else:
+        concat_inputs = "".join(f"[b{b_idx}]" for b_idx in range(len(blocks)))
+        filter_chains.append(f"{concat_inputs}concat=n={len(blocks)}:v=1:a=0[outv]")
+
+    input_args: List[str] = []
+    for vf in video_files:
+        input_args.extend(['-i', vf])
+
+    return input_args, "; ".join(filter_chains)
+
+
 def concatenate_videos_ffmpeg(video_files: List[str], output_file: str, 
                               audio_file: str = None, start_time: float = 0.0,
                               end_time: float = None, use_nvenc: bool = False,
                               gpu_encoder: str = 'h264_nvenc', fps: float = 30.0,
-                              temp_dir: str = None) -> str:
+                              temp_dir: str = None,
+                              transitions: Sequence[float | None] | None = None,
+                              segment_durations: Sequence[float] | None = None) -> str:
     """
-    Concatenate video files using FFmpeg concat demuxer.
+    Concatenate video files using FFmpeg.
+    If transitions are supplied and contain active crossfades, assembles via xfade + concat.
+    Otherwise uses the fast stream-copy concat demuxer.
     
     ✅ FRAME-ACCURATE: Maintains precise timing through concatenation
     """
     if temp_dir is None:
         temp_dir = os.path.dirname(output_file)
-    
+
+    has_transitions = bool(
+        transitions is not None
+        and len(transitions) > 0
+        and any(t is not None and t > 0 for t in transitions)
+        and segment_durations is not None
+        and len(segment_durations) == len(video_files)
+    )
+
+    is_prores = output_file.lower().endswith('.mov')
+
+    if has_transitions:
+        input_args, filter_complex = _build_transition_filtergraph(
+            video_files, transitions, segment_durations
+        )
+        fade_count = sum(1 for t in transitions if t and t > 0)
+        cut_count = sum(1 for t in transitions if t is None or t <= 0)
+        print(f"   🔀 Assembling {len(video_files)} segments ({fade_count} crossfade(s), {cut_count} hard cut(s))...")
+        assemble_started = time.perf_counter()
+        cmd = [FFMPEG_PATH, '-nostdin', '-hide_banner']
+        cmd.extend(input_args)
+        audio_idx = len(video_files)
+        if audio_file:
+            if end_time and end_time > start_time:
+                cmd.extend(['-ss', str(start_time), '-t', str(end_time - start_time), '-i', audio_file])
+            elif start_time > 0:
+                cmd.extend(['-ss', str(start_time), '-i', audio_file])
+            else:
+                cmd.extend(['-i', audio_file])
+
+        cmd.extend(['-filter_complex', filter_complex])
+        cmd.extend(['-map', '[outv]'])
+        if audio_file:
+            cmd.extend(['-map', f'{audio_idx}:a:0'])
+
+        if is_prores:
+            cmd.extend(['-c:v', 'prores', '-profile:v', '0', '-pix_fmt', 'yuv422p10le'])
+            if audio_file:
+                cmd.extend(['-c:a', 'pcm_s24le', '-ar', '48000', '-shortest'])
+        else:
+            if use_nvenc:
+                if gpu_encoder in ('h264_nvenc', 'hevc_nvenc'):
+                    cmd.extend(get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
+                elif gpu_encoder in ('h264_amf', 'hevc_amf'):
+                    cmd.extend(get_amf_quality_args(gpu_encoder, include_pix_fmt=True))
+            else:
+                cmd.extend(get_cpu_h264_quality_args(include_pix_fmt=True))
+
+            if audio_file:
+                cmd.extend(['-c:a', 'pcm_s24le', '-ar', '48000', '-shortest'])
+            cmd.extend(['-fflags', '+genpts', '-movflags', '+faststart'])
+
+        cmd.extend(['-fps_mode', 'cfr', '-r', str(fps), '-y', output_file])
+
+        result = _run_media_command(cmd, timeout=600)
+        if result.returncode != 0:
+            raise Exception(f"Transition assembly failed: {result.stderr}")
+        print(f"   ✓ Transition assembly complete in {_fmt_seconds(time.perf_counter() - assemble_started)}")
+        return output_file
+
     # Create concat file
     concat_file = os.path.join(temp_dir, f'concat_list_{uuid.uuid4().hex}.txt')
     with open(concat_file, 'w', encoding='utf-8') as f:
         for video_file in video_files:
             escaped_path = video_file.replace('\\', '/')
             f.write(f"file '{escaped_path}'\n")
-    
-    is_prores = output_file.lower().endswith('.mov')
+
     temp_video = None
     temp_audio = None
     

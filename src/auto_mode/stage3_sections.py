@@ -2,7 +2,10 @@
 """Stage 3: broad musical section detection and labeling."""
 
 from typing import Dict, List
-import librosa
+try:
+    import librosa
+except ImportError:
+    librosa = None
 import numpy as np
 
 from . import AutoWaveConfig

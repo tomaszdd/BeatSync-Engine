@@ -54,7 +54,13 @@ from ffmpeg_processing import (
     seconds_to_frame_count,
     frame_count_to_seconds,
 )
-from auto_mode.stage6_av_planner import build_planned_clip_sequence, summarize_clip_plan
+from auto_mode.stage6_av_planner import (
+    build_planned_clip_sequence,
+    summarize_clip_plan,
+    compute_beat_transitions,
+    compute_clip_handles,
+    DEFAULT_TRANSITION_DURATION,
+)
 
 # Import mode modules
 from auto_mode import analyze_beats_auto
@@ -321,6 +327,30 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help='Source video file pinned to the very last output segment (default: none)'
     )
+    parser.add_argument(
+        '--min-subject-confidence',
+        type=float,
+        default=0.0,
+        help='Minimum subject confidence score (0.0 - 1.0) to filter out floor/pocket shots (default: 0.0)'
+    )
+    parser.add_argument(
+        '--transitions',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Enable beat-matched crossfades on weaker beats while keeping punchy hard cuts on strong beats (default: True)'
+    )
+    parser.add_argument(
+        '--title-card',
+        action='store_true',
+        default=False,
+        help='Enable blur-to-sharp opening title card treatment (default: False)'
+    )
+    parser.add_argument(
+        '--start-text',
+        type=str,
+        default='',
+        help='Title text for opening title card or overlay (default: empty)'
+    )
 
     return parser.parse_args()
 
@@ -450,29 +480,43 @@ def create_clip_parallel(args):
     clip_started = time.perf_counter()
     planned_clip = None
     debug_callback = None
-    if len(args) >= 10:
+    in_handle = 0.0
+    out_handle = 0.0
+    if len(args) >= 12:
         (i, video_file, final_duration, target_size,
-         use_nvenc, gpu_encoder, temp_dir, fps, planned_clip, debug_callback) = args
+         use_nvenc, gpu_encoder, temp_dir, fps, planned_clip, debug_callback, in_handle, out_handle) = args[:12]
+    elif len(args) >= 11:
+        (i, video_file, final_duration, target_size,
+         use_nvenc, gpu_encoder, temp_dir, fps, planned_clip, debug_callback, in_handle) = args[:11]
+    elif len(args) >= 10:
+        (i, video_file, final_duration, target_size,
+         use_nvenc, gpu_encoder, temp_dir, fps, planned_clip, debug_callback) = args[:10]
     elif len(args) >= 9:
         (i, video_file, final_duration, target_size,
-         use_nvenc, gpu_encoder, temp_dir, fps, planned_clip) = args
+         use_nvenc, gpu_encoder, temp_dir, fps, planned_clip) = args[:9]
     else:
         (i, video_file, final_duration, target_size,
-         use_nvenc, gpu_encoder, temp_dir, fps) = args
+         use_nvenc, gpu_encoder, temp_dir, fps) = args[:8]
     
     try:
+        in_handle = max(0.0, float(in_handle or 0.0))
+        out_handle = max(0.0, float(out_handle or 0.0))
         if planned_clip:
             video_file = planned_clip.get('video_file') or video_file
             video_duration = get_video_duration(video_file)
-            source_duration = float(planned_clip.get('source_duration', final_duration))
-            source_duration = max(0.05, min(source_duration, video_duration))
-            max_start = max(0.0, video_duration - source_duration)
-            clip_start = max(0.0, min(float(planned_clip.get('start_time', 0.0)), max_start))
+            base_duration = float(planned_clip.get('source_duration', final_duration))
+            base_duration = max(0.05, min(base_duration, video_duration))
+            max_start = max(0.0, video_duration - base_duration)
+            base_start = max(0.0, min(float(planned_clip.get('start_time', 0.0)), max_start))
+
+            clip_start = max(0.0, base_start - in_handle)
+            source_duration = in_handle + base_duration + out_handle
+            source_duration = max(0.05, source_duration)
         else:
             # Random start time from video if visual planning is unavailable.
             video_duration = get_video_duration(video_file)
-            
-            required_source_duration = final_duration
+            base_duration = final_duration
+            required_source_duration = in_handle + base_duration + out_handle
             
             if video_duration >= required_source_duration:
                 max_start = video_duration - required_source_duration
@@ -480,7 +524,7 @@ def create_clip_parallel(args):
                 source_duration = required_source_duration
             else:
                 clip_start = 0
-                source_duration = video_duration
+                source_duration = max(video_duration, required_source_duration)
             
         
         # Output file
@@ -890,7 +934,9 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                       fade_out_seconds: float = 0.0,
                       planned_clip_sequence: Sequence[Dict] | None = None,
                       image_capture_times: Dict[str, float] | None = None,
-                      debug_callback: Callable[[str], None] | None = None) -> str:
+                      debug_callback: Callable[[str], None] | None = None,
+                      transitions_enabled: bool = True,
+                      title_card_enabled: bool = False) -> str:
     """
     Creates a music video with video clips cut to detected beats.
     
@@ -1091,6 +1137,23 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             edge_buffer_seconds, debug_callback=debug_callback,
         )
 
+    transitions = None
+    in_handles = [0.0] * total_clips
+    out_handles = [0.0] * total_clips
+    if transitions_enabled and total_clips > 1:
+        transitions = compute_beat_transitions(
+            planned_clip_sequence=planned_clip_sequence,
+            segment_durations=segment_durations,
+            beat_info=beat_info,
+        )
+        in_handles, out_handles = compute_clip_handles(
+            segment_durations=segment_durations,
+            transitions=transitions,
+        )
+        cuts = sum(1 for t in transitions if t is None or t <= 0)
+        fades = sum(1 for t in transitions if t and t > 0)
+        print(f"🔀 Transitions: {fades} beat-matched crossfade(s), {cuts} hard cut(s)")
+
     if planned_clip_sequence:
         plan_summary = summarize_clip_plan(planned_clip_sequence)
         if beat_info is not None:
@@ -1100,6 +1163,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             beat_info['render_plan_data'] = {
                 'clips': [dict(clip) for clip in planned_clip_sequence],
                 'segment_durations': [float(d) for d in segment_durations],
+                'transitions': [t for t in transitions] if transitions else [],
                 'beat_times': [float(t) for t in beat_times],
                 'fps': float(fps),
                 'audio_duration': float(audio_duration),
@@ -1166,11 +1230,12 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             prores_file = prores_map.get(source_video)
             if not prores_file:
                 raise RuntimeError(f"Planned source video not available in ProRes map: {source_video}")
-            segment_start = float(planned_clip.get('start_time', 0.0))
+            segment_start = max(0.0, float(planned_clip.get('start_time', 0.0)) - in_handles[i])
+            extracted_prores_dur = in_handles[i] + exact_duration + out_handles[i]
 
             # Extract segment
             segment_file = extract_prores_segment_random(
-                prores_file, exact_duration, prores_fps, segments_dir, i,
+                prores_file, extracted_prores_dur, prores_fps, segments_dir, i,
                 start_time=segment_start
             )
             segment_files.append(segment_file)
@@ -1191,8 +1256,10 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             audio_file=audio_file,
             start_time=start_time,
             end_time=end_time,
-            use_nvenc=False,  # ProRes uses stream copy
-            temp_dir=session_temp_dir
+            use_nvenc=False,  # ProRes uses stream copy when no transitions
+            temp_dir=session_temp_dir,
+            transitions=transitions,
+            segment_durations=segment_durations,
         )
         
         print(f"\n{'='*60}")
@@ -1240,6 +1307,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             start_duration=start_text_duration, end_text=end_text, end_position=end_text_position,
             end_duration=end_text_duration, use_nvenc=False, fps=fps, font_file=text_font_file,
             fade_in=fade_in_seconds, fade_out=fade_out_seconds,
+            title_card_enabled=title_card_enabled,
         )
         return output_file
     
@@ -1268,7 +1336,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             video_file = planned_clip.get('video_file')
             clip_args.append((i, video_file, final_duration,
                             target_size, use_nvenc, gpu_encoder, session_temp_dir, fps,
-                            planned_clip, debug_callback))
+                            planned_clip, debug_callback, in_handles[i], out_handles[i]))
         
         clip_files = [None] * len(clip_args)
         clip_timings: List[float] = []
@@ -1345,7 +1413,9 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             use_nvenc=use_nvenc,
             gpu_encoder=gpu_encoder,
             fps=fps,
-            temp_dir=session_temp_dir
+            temp_dir=session_temp_dir,
+            transitions=transitions,
+            segment_durations=segment_durations,
         )
         assembly_seconds = time.perf_counter() - assembly_started
         render_info["final_assembly_seconds"] = float(assembly_seconds)
@@ -1385,6 +1455,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             start_duration=start_text_duration, end_text=end_text, end_position=end_text_position,
             end_duration=end_text_duration, use_nvenc=use_nvenc, gpu_encoder=gpu_encoder, fps=fps,
             font_file=text_font_file, fade_in=fade_in_seconds, fade_out=fade_out_seconds,
+            title_card_enabled=title_card_enabled,
         )
         return output_file
  
@@ -1495,10 +1566,14 @@ def main() -> None:
         strict_unique_non_overlap=True,
         edge_buffer_seconds=args.edge_buffer_seconds,
         clip_order_mode=args.clip_order_mode,
+        min_subject_confidence=args.min_subject_confidence,
         first_video=args.first_video,
         last_video=args.last_video,
         image_capture_times=image_capture_times,
         target_resolution=target_resolution,
+        transitions_enabled=args.transitions,
+        title_card_enabled=args.title_card,
+        start_text=args.start_text,
     )
  
     print(f'✅ Music video created successfully: {output_file}')

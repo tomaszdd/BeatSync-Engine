@@ -413,7 +413,8 @@ def _store_render_plan(*, beat_info: dict, output_path: str, audio_file: str,
                        video_files: VideoFilesInput, target_resolution, processing_mode: str,
                        is_prores: bool, use_gpu: bool, gpu_encoder: str, max_workers: int,
                        strict_unique_non_overlap: bool, edge_buffer_seconds: float,
-                       text_settings: dict) -> str | None:
+                       text_settings: dict, transitions_enabled: bool = True,
+                       title_card_enabled: bool = False) -> str | None:
     """Persist the rendered clip plan so single clips can be nudged later.
 
     A failure here must never invalidate an otherwise successful render.
@@ -439,6 +440,9 @@ def _store_render_plan(*, beat_info: dict, output_path: str, audio_file: str,
             strict_unique_non_overlap=strict_unique_non_overlap,
             edge_buffer_seconds=edge_buffer_seconds,
             text_settings=text_settings,
+            transitions_enabled=transitions_enabled,
+            title_card_enabled=title_card_enabled,
+            transitions=plan_data.get('transitions'),
         )
         return clip_plan.save_render_plan(plan, clip_plan.plan_path_for_output(output_path))
     except Exception as exc:
@@ -465,6 +469,8 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        text_font: str = DEFAULT_TEXT_FONT,
                        fade_enabled: bool = False,
                        fade_duration: float = 1.0,
+                       transitions_enabled: bool = True,
+                       title_card_enabled: bool = False,
                        progress_callback: Callable[[str], None] | None = None,
                        console_logger: StageConsoleLogger | None = None) -> StatusResult:
     total_started = time.perf_counter()
@@ -628,6 +634,8 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             fade_out_seconds=fade_secs,
             image_capture_times=image_capture_times,
             debug_callback=debug_callback,
+            transitions_enabled=transitions_enabled,
+            title_card_enabled=title_card_enabled,
         )
 
         # Move to output folder
@@ -657,6 +665,8 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                 'fade_in_seconds': fade_secs,
                 'fade_out_seconds': fade_secs,
             },
+            transitions_enabled=transitions_enabled,
+            title_card_enabled=title_card_enabled,
         )
         if plan_path:
             session_state['last_plan_path'] = plan_path
@@ -734,7 +744,9 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  end_text_duration: float = 3.0,
                  text_font: str = DEFAULT_TEXT_FONT,
                  fade_enabled: bool = False,
-                 fade_duration: float = 1.0) -> Iterator[StatusResult]:
+                 fade_duration: float = 1.0,
+                 transitions_enabled: bool = True,
+                 title_card_enabled: bool = False) -> Iterator[StatusResult]:
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
     initial_status = _stage_status(1)
@@ -774,6 +786,8 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                     text_font=text_font,
                     fade_enabled=fade_enabled,
                     fade_duration=fade_duration,
+                    transitions_enabled=transitions_enabled,
+                    title_card_enabled=title_card_enabled,
                     progress_callback=progress_callback,
                     console_logger=console_logger,
                 )
@@ -1021,6 +1035,8 @@ def _rerender_from_plan_impl(state: dict, progress_callback: Callable[[str], Non
                 fade_out_seconds=float(text_settings.get('fade_out_seconds', 0.0)),
                 planned_clip_sequence=sequence,
                 debug_callback=debug_callback,
+                transitions_enabled=bool(plan.get('transitions_enabled', True)),
+                title_card_enabled=bool(plan.get('title_card_enabled', False)),
             )
             shutil.move(result_path, output_path)
 
@@ -1054,6 +1070,9 @@ def _rerender_from_plan_impl(state: dict, progress_callback: Callable[[str], Non
             strict_unique_non_overlap=bool(plan.get('strict_unique_non_overlap', True)),
             edge_buffer_seconds=float(plan.get('edge_buffer_seconds', 2.0)),
             text_settings=text_settings,
+            transitions_enabled=bool(plan.get('transitions_enabled', True)),
+            title_card_enabled=bool(plan.get('title_card_enabled', False)),
+            transitions=plan.get('transitions'),
         )
         new_plan_path = clip_plan.save_render_plan(new_plan, clip_plan.plan_path_for_output(output_path))
 
@@ -1209,7 +1228,9 @@ def _default_settings_state() -> dict:
         'clip_order_mode': 'auto',
         'min_subject_confidence': 0.0,
         'max_clip_seconds': None,
+        'transitions_enabled': True,
         'start_text': '', 'start_text_position': 'bottom_center', 'start_text_duration': 3.0,
+        'title_card_enabled': False,
         'end_text': '', 'end_text_position': 'bottom_center', 'end_text_duration': 3.0,
         'text_font': DEFAULT_TEXT_FONT,
         'fade_enabled': False, 'fade_duration': 1.0,
@@ -1310,7 +1331,10 @@ def _persist_last_video(path: str | None) -> None:
 # Keys persisted from the settings components below, in the exact order they're wired up.
 _SETTINGS_KEYS = [
     'output_filename', 'processing_mode', 'custom_fps', 'strict_mode', 'edge_buffer_seconds',
-    'clip_order_mode', 'min_subject_confidence', 'max_clip_seconds', 'start_text', 'start_text_position', 'start_text_duration',
+    'clip_order_mode', 'min_subject_confidence', 'max_clip_seconds',
+    'transitions_enabled',
+    'start_text', 'start_text_position', 'start_text_duration',
+    'title_card_enabled',
     'end_text', 'end_text_position', 'end_text_duration', 'text_font',
     'fade_enabled', 'fade_duration',
 ]
@@ -1339,6 +1363,8 @@ def _restore_settings():
     """Repopulate the settings components and last result from the previous session."""
     state = _load_upload_state()
     defaults = _default_settings_state()
+    if 'title_card_enabled' not in state and state.get('start_text', '').strip():
+        defaults['title_card_enabled'] = True
     updates = [gr.update(value=state.get(key, defaults[key])) for key in _SETTINGS_KEYS]
 
     last_output = state.get('last_video_output')
@@ -1442,9 +1468,19 @@ def create_ui() -> gr.Blocks:
                         label=LABEL_MAX_CLIP_SECONDS, value=None, precision=1, minimum=0.0,
                         info=INFO_MAX_CLIP_SECONDS
                     )
+                    transitions_enabled = gr.Checkbox(
+                        value=True,
+                        label=LABEL_TRANSITIONS_ENABLED,
+                        info=INFO_TRANSITIONS_ENABLED,
+                    )
                     with gr.Group():
-                        gr.Markdown('#### 📝 Text Overlays')
+                        gr.Markdown('#### 📝 Text Overlays & Title Card')
                         start_text = gr.Textbox(label=LABEL_START_TEXT, info=INFO_START_TEXT, lines=3, max_lines=8)
+                        title_card_enabled = gr.Checkbox(
+                            value=False,
+                            label=LABEL_TITLE_CARD_ENABLED,
+                            info=INFO_TITLE_CARD_ENABLED,
+                        )
                         with gr.Row():
                             start_text_position = gr.Dropdown(TEXT_POSITION_CHOICES, value='bottom_center', label=LABEL_TEXT_POSITION)
                             start_text_duration = gr.Number(value=3.0, minimum=0.1, precision=1, label=LABEL_TEXT_DURATION)
@@ -1535,6 +1571,7 @@ def create_ui() -> gr.Blocks:
                 start_text, start_text_position, start_text_duration,
                 end_text, end_text_position, end_text_duration, text_font,
                 fade_enabled, fade_duration,
+                transitions_enabled, title_card_enabled,
             ],
             outputs=[video_output, status_output, session_state],
             show_progress='hidden'
@@ -1608,6 +1645,23 @@ def create_ui() -> gr.Blocks:
             inputs=[text_font, start_text, end_text], outputs=[text_font_preview],
         )
 
+        prev_start_text = gr.State('')
+
+        def _on_start_text_input(new_text, current_card, prev_text):
+            has_new = bool(new_text and new_text.strip())
+            has_prev = bool(prev_text and prev_text.strip())
+            if not has_prev and has_new:
+                return True, new_text
+            if not has_new:
+                return False, new_text
+            return current_card, new_text
+
+        start_text.input(
+            fn=_on_start_text_input,
+            inputs=[start_text, title_card_enabled, prev_start_text],
+            outputs=[title_card_enabled, prev_start_text],
+        )
+
         # .input() (user-driven only) avoids a restore feedback loop: .change() also fires when
         # app.load sets these values programmatically, which would immediately re-save and
         # overwrite the just-restored audio/first/last video with mismatched/empty values.
@@ -1638,7 +1692,10 @@ def create_ui() -> gr.Blocks:
 
         _settings_components = [
             output_filename, processing_mode, custom_fps, strict_mode, edge_buffer_seconds,
-            clip_order_mode, min_subject_confidence, max_clip_seconds, start_text, start_text_position, start_text_duration,
+            clip_order_mode, min_subject_confidence, max_clip_seconds,
+            transitions_enabled,
+            start_text, start_text_position, start_text_duration,
+            title_card_enabled,
             end_text, end_text_position, end_text_duration, text_font,
             fade_enabled, fade_duration,
         ]

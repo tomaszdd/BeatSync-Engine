@@ -2,7 +2,10 @@
 import os
 import sys
 import subprocess
-import librosa
+try:
+    import librosa
+except ImportError:
+    librosa = None
 from typing import Dict
 from importlib import metadata
 
@@ -198,7 +201,8 @@ def print_startup_banner():
     ffmpeg_type = "Portable" if FFMPEG_FOUND else "System"
     print(f"   FFmpeg: {ffmpeg_type} | NVENC: {'[OK]' if nvenc else '[NO]'} | AMF: {'[OK]' if amf else '[NO]'}")
     print(f"   CPU Optimization: {cpu_count} threads detected")
-    print(f"   Librosa: {librosa.__version__}")
+    if librosa is not None:
+        print(f"   Librosa: {librosa.__version__}")
     print(CONSOLE_SEPARATOR + "\n")
 
 if __name__ == '__main__':
