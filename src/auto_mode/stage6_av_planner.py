@@ -601,10 +601,12 @@ def _journey_chapter_counts(
 ) -> List[int]:
     """How many output segments each ordered chapter gets.
 
-    Every kept still-image chapter gets one segment; footage chapters split the rest
-    by their per-source budget (>= 1 each when there is room). If there are more
-    photos than ``JOURNEY_IMAGE_FRACTION`` of the timeline, the surplus is thinned
-    out evenly so their chronological order is kept.
+    Every kept still-image chapter gets one segment; every footage chapter with
+    usable footage gets first claim to at least 1 delivered segment when there is room.
+    The remaining surplus segments are split among footage chapters proportionally
+    to their surplus budget (usable duration beyond the guaranteed 1st segment floor).
+    If there are more photos than ``JOURNEY_IMAGE_FRACTION`` of the timeline, the
+    surplus photos are thinned out evenly so their chronological order is kept.
     """
     counts = [0] * len(chapters)
     img_idx = [k for k, c in enumerate(chapters) if c["kind"] == "image"]
@@ -634,6 +636,43 @@ def _journey_chapter_counts(
     for j, k in enumerate(foot_idx):
         counts[k] = alloc[j]
     return counts
+
+
+def _merge_contiguous_candidates(cands: Sequence[Dict]) -> List[Dict]:
+    """Merge overlapping or touching candidate chunks from the same continuous footage.
+
+    video_analysis splits scenes longer than 5.2s into artificial chunks. In journey
+    mode, a single cut should be able to span across chunk boundaries within continuous
+    usable footage rather than failing on cuts longer than a single chunk.
+    """
+    if not cands:
+        return []
+    cands_sorted = sorted(cands, key=lambda c: float(c.get("start", 0.0)))
+    merged = []
+    current = dict(cands_sorted[0])
+    vd = float(current.get("video_duration") or 0.0)
+    for c in cands_sorted[1:]:
+        curr_end = float(current.get("end", 0.0))
+        next_start = float(c.get("start", 0.0))
+        # If overlapping or contiguous (within 0.1s tolerance)
+        if next_start <= curr_end + 0.1:
+            current["end"] = max(curr_end, float(c.get("end", 0.0)))
+            if float(c.get("editorial_score", 0.0)) > float(current.get("editorial_score", 0.0)):
+                for k in ("quality_score", "editorial_score", "action_score", "beauty_score", "tags", "target"):
+                    if k in c:
+                        current[k] = c[k]
+        else:
+            if vd > 0 and vd - float(current.get("end", 0.0)) <= 0.05:
+                current["end"] = vd
+            current["duration"] = float(current.get("end", 0.0)) - float(current.get("start", 0.0))
+            merged.append(current)
+            current = dict(c)
+            vd = float(current.get("video_duration") or 0.0)
+    if vd > 0 and vd - float(current.get("end", 0.0)) <= 0.05:
+        current["end"] = vd
+    current["duration"] = float(current.get("end", 0.0)) - float(current.get("start", 0.0))
+    merged.append(current)
+    return merged
 
 
 def _build_journey_sequence(
@@ -671,6 +710,10 @@ def _build_journey_sequence(
     footage = [v for v in by_video if not _is_image_loop_video(v)]
     stills = [v for v in by_video if _is_image_loop_video(v)]
 
+    # Merge contiguous/overlapping candidate chunks within the same continuous footage
+    for vf in footage:
+        by_video[vf] = _merge_contiguous_candidates(by_video[vf])
+
     usable = {v: _source_usable_seconds(by_video[v], edge_buffer_seconds) for v in footage}
     footage = [v for v in footage if usable[v] >= 0.2]
     if not footage and not stills:
@@ -696,14 +739,21 @@ def _build_journey_sequence(
     chapters += [{"kind": "image", "src": v, "ts": known_still_ts[v]} for v in stills]
     chapters.sort(key=lambda c: (c["ts"], 0 if c["kind"] == "footage" else 1, os.path.basename(c["src"])))
 
+    # Guarantee floor of 1 clip per eligible footage source (usable[v] >= 0.2).
+    # Surplus segments beyond the 1-clip floor are weighted proportionally by
+    # surplus usable duration (usable footage available beyond the 1st segment's
+    # cut/buffer requirement of ~3.0s). This prevents short clips from being budgeted
+    # surplus quota they cannot physically deliver, which would otherwise accumulate
+    # into rolling deficit and distort downstream chapters.
     budget: Dict[str, float] = {}
     if footage:
-        mean_usable = sum(usable.values()) / len(footage)
-        raw = {}
-        for v in footage:
-            bonus = (usable[v] / mean_usable) ** 0.5 if mean_usable > 0 else 1.0
-            raw[v] = max(0.4, min(JOURNEY_SOURCE_BONUS_CAP, bonus))
-        budget = dict(raw)  # relative weights; _largest_remainder handles the scaling
+        floor_sec = 3.0
+        surplus = {v: max(0.0, usable[v] - floor_sec) for v in footage}
+        total_surplus = sum(surplus.values())
+        if total_surplus > 0:
+            budget = {v: surplus[v] for v in footage}
+        else:
+            budget = {v: max(1e-6, usable[v]) for v in footage}
 
     counts = _journey_chapter_counts(chapters, n, budget)
 
@@ -1056,14 +1106,19 @@ def _select_non_overlapping_start(
     window_end = max(window_start, max(start, end))
 
     video_duration = float(candidate.get("video_duration", window_end))
+    if video_duration > 0 and video_duration - end <= 0.05 and end > start:
+        end = video_duration
+        window_end = max(window_end, end)
+
     effective_buffer = _effective_edge_buffer(str(candidate.get("video_file") or ""), edge_buffer_seconds)
     allowed_lo, allowed_hi = _buffered_start_bounds(video_duration, source_duration, effective_buffer)
     window_start = max(window_start, allowed_lo)
     window_end = min(window_end, allowed_hi + source_duration)
 
     max_start = window_end - source_duration
-    if max_start < window_start:
+    if max_start < window_start - 1e-4:
         return None
+    max_start = max(max_start, window_start)
 
     video_file = str(candidate.get("video_file") or "")
     preferred = _preferred_start_in_window(candidate, profile, source_duration, window_start, max_start)
@@ -1103,7 +1158,7 @@ def _pick_start_from_available_gaps(
     occupied: List[tuple[float, float]],
     preferred_start: float,
 ) -> float | None:
-    if window_end - window_start < source_duration:
+    if window_end - window_start < source_duration - 1e-4:
         return None
 
     gaps: List[tuple[float, float]] = []
@@ -1116,13 +1171,13 @@ def _pick_start_from_available_gaps(
         if occ_start > cursor:
             gap_start = cursor
             gap_end = min(occ_start, window_end)
-            if gap_end - gap_start >= source_duration:
+            if gap_end - gap_start >= source_duration - 1e-4:
                 gaps.append((gap_start, gap_end))
         cursor = max(cursor, occ_end)
         if cursor >= window_end:
             break
 
-    if cursor < window_end and window_end - cursor >= source_duration:
+    if cursor < window_end and window_end - cursor >= source_duration - 1e-4:
         gaps.append((cursor, window_end))
 
     if not gaps:
@@ -1131,7 +1186,7 @@ def _pick_start_from_available_gaps(
     best_start = None
     best_distance = float("inf")
     for gap_start, gap_end in gaps:
-        local_max_start = gap_end - source_duration
+        local_max_start = max(gap_start, gap_end - source_duration)
         start = max(gap_start, min(preferred_start, local_max_start))
         distance = abs(start - preferred_start)
         if distance < best_distance:
