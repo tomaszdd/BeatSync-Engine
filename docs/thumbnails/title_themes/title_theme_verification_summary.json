@@ -1,0 +1,44 @@
+{
+  "audio_duration": 60.029388,
+  "run_a": {
+    "output": "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\output\\verify_theme_run_a_auto.mp4",
+    "plan": "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\output\\verify_theme_run_a_auto.plan.json",
+    "render_time_s": 119.72,
+    "frame_count": 1800,
+    "duration": 60.0,
+    "encoder": "Lavc63.1.102 h264_amf",
+    "theme_name": "Warm & Sentimental",
+    "theme_description": "Warm amber/gold tint, elegant serif title, soft procedural bokeh/light-leak overlay, warm crossfade blend.",
+    "title_font": "C:/BeatSyncTest/app/BeatSync-Engine-main/assets/fonts/PlayfairDisplay-Bold.ttf",
+    "subtitle_font": "C:/BeatSyncTest/app/BeatSync-Engine-main/assets/fonts/Montserrat-Regular.ttf",
+    "graphic_overlay": "bokeh_light_leak",
+    "transition_tint": "gamma_r=1.12:gamma_b=0.88:saturation=1.06",
+    "mood_signature": {
+      "warmth": 0.43,
+      "energy": 0.52,
+      "dominant_emotion": "soft",
+      "selected_theme": "Warm & Sentimental",
+      "reason": "Dominant warm/sentimental tags (soft=27, beauty=24, warmth=0.43) with moderate energy (0.52)."
+    }
+  },
+  "run_b": {
+    "output": "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\output\\verify_theme_run_b_joyful.mp4",
+    "plan": "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\output\\verify_theme_run_b_joyful.plan.json",
+    "render_time_s": 43.184447288513184,
+    "theme_name": "Joyful & Bright",
+    "title_font": "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\assets\\fonts\\Quicksand-Bold.ttf",
+    "subtitle_font": "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\assets\\fonts\\Poppins-Regular.ttf",
+    "graphic_overlay": "light_particles",
+    "transition_tint": "brightness=0.08:gamma_r=1.08:gamma_b=0.96:saturation=1.10"
+  },
+  "run_c": {
+    "output": "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\output\\verify_theme_run_c_upbeat.mp4",
+    "plan": "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\output\\verify_theme_run_c_upbeat.plan.json",
+    "render_time_s": 25.967042207717896,
+    "theme_name": "Upbeat & Energetic",
+    "title_font": "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\assets\\fonts\\BebasNeue-Regular.ttf",
+    "subtitle_font": "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\assets\\fonts\\Oswald-Regular.ttf",
+    "graphic_overlay": "light_streaks",
+    "transition_tint": "contrast=1.15:brightness=0.10:saturation=1.20"
+  }
+}

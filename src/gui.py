@@ -128,6 +128,13 @@ from auto_mode import analyze_beats_auto
 
 # Import UI content
 from ui_content import *
+from title_theme import (
+    THEME_AUTO,
+    THEME_CHOICES,
+    THEME_WARM_SENTIMENTAL,
+    THEME_JOYFUL_BRIGHT,
+    THEME_UPBEAT_ENERGETIC,
+)
 
 # Gradio's multipart parser uses tempfile.NamedTemporaryFile for upload chunks.
 # Use the project-local staging directory so the final cache move is atomic.
@@ -414,7 +421,8 @@ def _store_render_plan(*, beat_info: dict, output_path: str, audio_file: str,
                        is_prores: bool, use_gpu: bool, gpu_encoder: str, max_workers: int,
                        strict_unique_non_overlap: bool, edge_buffer_seconds: float,
                        text_settings: dict, transitions_enabled: bool = True,
-                       title_card_enabled: bool = False) -> str | None:
+                       title_card_enabled: bool = False,
+                       title_theme: str = THEME_AUTO) -> str | None:
     """Persist the rendered clip plan so single clips can be nudged later.
 
     A failure here must never invalidate an otherwise successful render.
@@ -443,6 +451,8 @@ def _store_render_plan(*, beat_info: dict, output_path: str, audio_file: str,
             transitions_enabled=transitions_enabled,
             title_card_enabled=title_card_enabled,
             transitions=plan_data.get('transitions'),
+            title_theme=title_theme,
+            mood_signature=plan_data.get('mood_signature'),
         )
         return clip_plan.save_render_plan(plan, clip_plan.plan_path_for_output(output_path))
     except Exception as exc:
@@ -471,6 +481,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        fade_duration: float = 1.0,
                        transitions_enabled: bool = True,
                        title_card_enabled: bool = False,
+                       title_theme: str = THEME_AUTO,
                        progress_callback: Callable[[str], None] | None = None,
                        console_logger: StageConsoleLogger | None = None) -> StatusResult:
     total_started = time.perf_counter()
@@ -636,6 +647,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             debug_callback=debug_callback,
             transitions_enabled=transitions_enabled,
             title_card_enabled=title_card_enabled,
+            title_theme=title_theme,
         )
 
         # Move to output folder
@@ -664,9 +676,11 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                 'text_font': text_font,
                 'fade_in_seconds': fade_secs,
                 'fade_out_seconds': fade_secs,
+                'title_theme': title_theme,
             },
             transitions_enabled=transitions_enabled,
             title_card_enabled=title_card_enabled,
+            title_theme=title_theme,
         )
         if plan_path:
             session_state['last_plan_path'] = plan_path
@@ -746,7 +760,8 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  fade_enabled: bool = False,
                  fade_duration: float = 1.0,
                  transitions_enabled: bool = True,
-                 title_card_enabled: bool = False) -> Iterator[StatusResult]:
+                 title_card_enabled: bool = False,
+                 title_theme: str = THEME_AUTO) -> Iterator[StatusResult]:
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
     initial_status = _stage_status(1)
@@ -788,6 +803,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                     fade_duration=fade_duration,
                     transitions_enabled=transitions_enabled,
                     title_card_enabled=title_card_enabled,
+                    title_theme=title_theme,
                     progress_callback=progress_callback,
                     console_logger=console_logger,
                 )
@@ -1037,6 +1053,7 @@ def _rerender_from_plan_impl(state: dict, progress_callback: Callable[[str], Non
                 debug_callback=debug_callback,
                 transitions_enabled=bool(plan.get('transitions_enabled', True)),
                 title_card_enabled=bool(plan.get('title_card_enabled', False)),
+                title_theme=str(plan.get('title_theme') or text_settings.get('title_theme', THEME_AUTO)),
             )
             shutil.move(result_path, output_path)
 
@@ -1072,6 +1089,8 @@ def _rerender_from_plan_impl(state: dict, progress_callback: Callable[[str], Non
             text_settings=text_settings,
             transitions_enabled=bool(plan.get('transitions_enabled', True)),
             title_card_enabled=bool(plan.get('title_card_enabled', False)),
+            title_theme=str(plan.get('title_theme') or text_settings.get('title_theme', THEME_AUTO)),
+            mood_signature=plan.get('mood_signature'),
             transitions=plan.get('transitions'),
         )
         new_plan_path = clip_plan.save_render_plan(new_plan, clip_plan.plan_path_for_output(output_path))
@@ -1231,6 +1250,7 @@ def _default_settings_state() -> dict:
         'transitions_enabled': True,
         'start_text': '', 'start_text_position': 'bottom_center', 'start_text_duration': 3.0,
         'title_card_enabled': False,
+        'title_theme': THEME_AUTO,
         'end_text': '', 'end_text_position': 'bottom_center', 'end_text_duration': 3.0,
         'text_font': DEFAULT_TEXT_FONT,
         'fade_enabled': False, 'fade_duration': 1.0,
@@ -1335,6 +1355,7 @@ _SETTINGS_KEYS = [
     'transitions_enabled',
     'start_text', 'start_text_position', 'start_text_duration',
     'title_card_enabled',
+    'title_theme',
     'end_text', 'end_text_position', 'end_text_duration', 'text_font',
     'fade_enabled', 'fade_duration',
 ]
@@ -1481,6 +1502,12 @@ def create_ui() -> gr.Blocks:
                             label=LABEL_TITLE_CARD_ENABLED,
                             info=INFO_TITLE_CARD_ENABLED,
                         )
+                        title_theme = gr.Radio(
+                            choices=THEME_CHOICES,
+                            value=THEME_AUTO,
+                            label=LABEL_TITLE_THEME,
+                            info=INFO_TITLE_THEME,
+                        )
                         with gr.Row():
                             start_text_position = gr.Dropdown(TEXT_POSITION_CHOICES, value='bottom_center', label=LABEL_TEXT_POSITION)
                             start_text_duration = gr.Number(value=3.0, minimum=0.1, precision=1, label=LABEL_TEXT_DURATION)
@@ -1572,6 +1599,7 @@ def create_ui() -> gr.Blocks:
                 end_text, end_text_position, end_text_duration, text_font,
                 fade_enabled, fade_duration,
                 transitions_enabled, title_card_enabled,
+                title_theme,
             ],
             outputs=[video_output, status_output, session_state],
             show_progress='hidden'
@@ -1696,6 +1724,7 @@ def create_ui() -> gr.Blocks:
             transitions_enabled,
             start_text, start_text_position, start_text_duration,
             title_card_enabled,
+            title_theme,
             end_text, end_text_position, end_text_duration, text_font,
             fade_enabled, fade_duration,
         ]

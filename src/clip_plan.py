@@ -55,6 +55,8 @@ def build_render_plan(
     transitions_enabled: bool = True,
     title_card_enabled: bool = False,
     transitions: Sequence[float | None] | None = None,
+    title_theme: str = 'Auto (AI mood match)',
+    mood_signature: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Assemble the serialisable plan dict for a finished render."""
     return {
@@ -78,6 +80,8 @@ def build_render_plan(
         'edge_buffer_seconds': float(edge_buffer_seconds),
         'transitions_enabled': bool(transitions_enabled),
         'title_card_enabled': bool(title_card_enabled),
+        'title_theme': str(title_theme),
+        'mood_signature': dict(mood_signature or {}),
         'transitions': [t for t in transitions] if transitions is not None else [],
         'text_settings': dict(text_settings or {}),
         'clips': [dict(c) for c in clips],

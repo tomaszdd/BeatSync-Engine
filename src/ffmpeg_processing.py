@@ -21,6 +21,21 @@ import uuid
 import re
 from typing import Tuple, List, Sequence, Dict, Any, Optional
 
+try:
+    from title_theme import (
+        ThemePreset,
+        resolve_theme,
+        THEME_AUTO,
+        THEME_PRESETS,
+        THEME_WARM_SENTIMENTAL,
+    )
+except ImportError:
+    ThemePreset = None
+    resolve_theme = None
+    THEME_AUTO = "Auto (AI mood match)"
+    THEME_PRESETS = {}
+    THEME_WARM_SENTIMENTAL = "Warm & Sentimental"
+
 
 from logger import (
     setup_environment,
@@ -402,11 +417,14 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
                               gpu_encoder: str = 'h264_nvenc', fps: float = 30.0,
                               font_file: str | None = None,
                               fade_in: float = 0.0, fade_out: float = 0.0,
-                              title_card_enabled: bool = False) -> str:
+                              title_card_enabled: bool = False,
+                              title_theme: str | None = None,
+                              theme_preset: Optional[Any] = None) -> str:
     """Burn optional start/end titles and/or a black fade in/out into an assembled video.
 
     If title_card_enabled is True and start_text is non-empty, applies a blur-to-sharp
-    title card opening that smoothly resolves into the sharp first clip footage.
+    title card opening that smoothly resolves into the sharp first clip footage,
+    using the chosen visual theme (typography, color grade, and graphic overlay).
     Otherwise, burns standard text overlay(s).
     """
     start_clean = str(start_text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
@@ -416,6 +434,9 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
     fade_out = max(0.0, float(fade_out or 0.0))
     if not have_text and fade_in <= 0.0 and fade_out <= 0.0:
         return output_file
+
+    if theme_preset is None and (title_theme or title_card_enabled) and resolve_theme:
+        theme_preset, _ = resolve_theme(title_theme)
 
     video_duration = get_video_duration(output_file)
     frame_w, frame_h = get_video_resolution(output_file)
@@ -432,20 +453,25 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
     use_title_card = bool(title_card_enabled and start_clean)
 
     def _make_text_filter(text: str, position: str, visible_from: float, visible_to: float,
-                           alpha_expr: str | None = None) -> str:
+                           alpha_expr: str | None = None,
+                           custom_font: str | None = None,
+                           custom_color: str | None = None) -> str:
         x, y = _TEXT_POSITIONS.get(position, _TEXT_POSITIONS['bottom_center'])
         font_size = _title_font_size(text, frame_w, frame_h)
         border_w = max(2, round(font_size / 18))
         line_spacing = max(4, round(font_size / 10))
+        target_font = custom_font if (custom_font and os.path.isfile(custom_font)) else font_file
+        target_farg = _escape_drawtext_fontfile(target_font)
+        color = custom_color or "white"
         if alpha_expr:
             common = (
-                f":fontcolor=white:fontsize={font_size}:borderw={border_w}:bordercolor=black:"
+                f":fontcolor={color}:fontsize={font_size}:borderw={border_w}:bordercolor=black:"
                 f"line_spacing={line_spacing}:x={x}:y={y}:"
                 f"alpha='{alpha_expr}':expansion=none"
             )
         else:
             common = (
-                f":fontcolor=white:fontsize={font_size}:borderw={border_w}:bordercolor=black:"
+                f":fontcolor={color}:fontsize={font_size}:borderw={border_w}:bordercolor=black:"
                 f"line_spacing={line_spacing}:x={x}:y={y}:"
                 f"enable='between(t,{visible_from:.3f},{visible_to:.3f})':expansion=none"
             )
@@ -454,10 +480,36 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
             with open(tf, 'w', encoding='utf-8', newline='\n') as fh:
                 fh.write(text)
             temp_text_files.append(tf)
-            return f"drawtext=fontfile='{font_arg}':textfile='{_escape_drawtext_fontfile(tf)}'{common}"
+            return f"drawtext=fontfile='{target_farg}':textfile='{_escape_drawtext_fontfile(tf)}'{common}"
         except OSError:
             flat = _escape_drawtext_value(text.replace('\n', ' '))
-            return f"drawtext=fontfile='{font_arg}':text='{flat}'{common}"
+            return f"drawtext=fontfile='{target_farg}':text='{flat}'{common}"
+
+    def _make_custom_text_filter(text: str, f_path: str, f_size: int, f_color: str,
+                                 x_expr: str, y_expr: str, visible_from: float, visible_to: float,
+                                 alpha_expr: str | None = None) -> str:
+        border_w = max(2, round(f_size / 20))
+        target_font = f_path if (f_path and os.path.isfile(f_path)) else font_file
+        f_arg = _escape_drawtext_fontfile(target_font)
+        if alpha_expr:
+            common = (
+                f":fontcolor={f_color}:fontsize={f_size}:borderw={border_w}:bordercolor=black:"
+                f"x={x_expr}:y={y_expr}:alpha='{alpha_expr}':expansion=none"
+            )
+        else:
+            common = (
+                f":fontcolor={f_color}:fontsize={f_size}:borderw={border_w}:bordercolor=black:"
+                f"x={x_expr}:y={y_expr}:enable='between(t,{visible_from:.3f},{visible_to:.3f})':expansion=none"
+            )
+        try:
+            tf = f"{text_base}_txt_{uuid.uuid4().hex}.txt"
+            with open(tf, 'w', encoding='utf-8', newline='\n') as fh:
+                fh.write(text)
+            temp_text_files.append(tf)
+            return f"drawtext=fontfile='{f_arg}':textfile='{_escape_drawtext_fontfile(tf)}'{common}"
+        except OSError:
+            flat = _escape_drawtext_value(text)
+            return f"drawtext=fontfile='{f_arg}':text='{flat}'{common}"
 
     audio_filters = []
     if fade_in > 0.0:
@@ -470,21 +522,51 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
     end_duration = max(0.0, float(end_duration or 0.0))
 
     if use_title_card:
-        # Blur-to-sharp title treatment:
-        # Opening window: ~2-3 seconds, blurred & dimmed with overlaid title, then resolving smoothly
+        # Blur-to-sharp title treatment with designed typography and theme styling
         window = min(float(start_duration or 2.5), float(video_duration))
         window = max(0.8, window)
         t_hold = round(min(1.2, window * 0.45), 3)
         t_fade = round(window - t_hold, 3)
 
         title_alpha = f"if(lte(t,{t_hold:.3f}),1.0,if(gte(t,{window:.3f}),0.0,({window:.3f}-t)/{t_fade:.3f}))"
-        title_filter = _make_text_filter(start_clean, start_position, 0.0, window, alpha_expr=title_alpha)
 
-        # Scale down to half-res for fast high-quality Gaussian blur, then scale back
+        # Typography: handle multi-line title/subtitle split
+        start_lines = [ln.strip() for ln in start_clean.splitlines() if ln.strip()]
+        has_subtitle = len(start_lines) >= 2
+        title_text = start_lines[0] if start_lines else ""
+        subtitle_text = start_lines[1] if has_subtitle else ""
+
+        is_default_font = (font_file is None or font_file == DEFAULT_TEXT_FONT_FILE)
+        t_font = (theme_preset.title_font if (theme_preset and hasattr(theme_preset, 'title_font') and is_default_font) else font_file)
+        s_font = (theme_preset.subtitle_font if (theme_preset and hasattr(theme_preset, 'subtitle_font') and is_default_font) else font_file)
+        t_color = theme_preset.title_color if (theme_preset and hasattr(theme_preset, 'title_color')) else "white"
+        s_color = theme_preset.subtitle_color if (theme_preset and hasattr(theme_preset, 'subtitle_color')) else "white"
+
+        if has_subtitle:
+            title_font_size = _title_font_size(title_text, frame_w, frame_h)
+            sub_font_size = max(16, int(round(title_font_size * 0.52)))
+            gap = max(10, int(round(sub_font_size * 0.55)))
+            total_block_h = title_font_size + gap + sub_font_size
+
+            title_y = f"(h-{total_block_h})/2"
+            sub_y = f"(h-{total_block_h})/2+{title_font_size}+{gap}"
+            title_x = "(w-text_w)/2"
+            sub_x = "(w-text_w)/2"
+
+            t_filter = _make_custom_text_filter(title_text, t_font, title_font_size, t_color, title_x, title_y, 0.0, window, alpha_expr=title_alpha)
+            s_filter = _make_custom_text_filter(subtitle_text, s_font, sub_font_size, s_color, sub_x, sub_y, 0.0, window, alpha_expr=title_alpha)
+            title_text_chain = f"{t_filter},{s_filter}"
+        else:
+            title_font_size = _title_font_size(start_clean, frame_w, frame_h)
+            title_text_chain = _make_custom_text_filter(start_clean, t_font, title_font_size, t_color, "(w-text_w)/2", "(h-text_h)/2", 0.0, window, alpha_expr=title_alpha)
+
+        color_grade_eq = theme_preset.title_color_grade_eq if (theme_preset and hasattr(theme_preset, 'title_color_grade_eq')) else "brightness=-0.15:contrast=0.90"
+        graphic_type = theme_preset.graphic_overlay_type if (theme_preset and hasattr(theme_preset, 'graphic_overlay_type')) else "bokeh_light_leak"
+
         blur_chain = (
             f"scale=iw/2:ih/2,"
             f"gblur=sigma=16:steps=2,"
-            f"eq=brightness=-0.15:contrast=0.90,"
+            f"eq={color_grade_eq},"
             f"scale={frame_w}:{frame_h}:flags=bilinear"
         )
         blend_expr = (
@@ -493,12 +575,51 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
             f"A*(1-(T-{t_hold:.3f})/{t_fade:.3f})+B*((T-{t_hold:.3f})/{t_fade:.3f})))"
         )
 
-        fc_parts = [
-            f"[0:v]split=2[orig][blur_in]",
-            f"[blur_in]{blur_chain}[blurred]",
-            f"[blurred][orig]blend=all_expr='{blend_expr}':enable='lte(t,{window:.3f})'[resolved]",
-            f"[resolved]{title_filter}[v_title]"
-        ]
+        # Themed procedural graphic overlay
+        if graphic_type == "bokeh_light_leak":
+            graphic_src = (
+                f"color=c=black:s={frame_w}x{frame_h}:d={window}:r={fps},"
+                f"noise=alls=60:allf=t+u,scale=iw/8:ih/8,gblur=sigma=20:steps=2,"
+                f"scale={frame_w}:{frame_h}:flags=bilinear,"
+                f"eq=contrast=2.0:brightness=0.05,colorbalance=rs=0.35:gs=0.15:bs=-0.30[graphic]"
+            )
+            graphic_blend = f"[blurred][graphic]blend=all_mode=screen[themed_bg]"
+        elif graphic_type == "light_particles":
+            graphic_src = (
+                f"color=c=black:s={frame_w}x{frame_h}:d={window}:r={fps},"
+                f"noise=alls=85:allf=t+u,scale=iw/4:ih/4,gblur=sigma=8:steps=2,"
+                f"scale={frame_w}:{frame_h}:flags=bilinear,"
+                f"eq=contrast=2.4:brightness=0.08,colorbalance=rs=0.25:gs=0.15:bs=0.05[graphic]"
+            )
+            graphic_blend = f"[blurred][graphic]blend=all_mode=screen[themed_bg]"
+        elif graphic_type == "light_streaks":
+            graphic_src = (
+                f"color=c=black:s={frame_w}x{frame_h}:d={window}:r={fps},"
+                f"noise=alls=90:allf=t+u,scale=iw:ih/32,gblur=sigma=24:steps=2,"
+                f"scale={frame_w}:{frame_h}:flags=bilinear,"
+                f"eq=contrast=2.5:brightness=0.10[graphic]"
+            )
+            graphic_blend = f"[blurred][graphic]blend=all_mode=screen[themed_bg]"
+        else:
+            graphic_src = None
+            graphic_blend = None
+
+        if graphic_src and graphic_blend:
+            fc_parts = [
+                f"[0:v]split=2[orig][blur_in]",
+                f"[blur_in]{blur_chain}[blurred]",
+                graphic_src,
+                graphic_blend,
+                f"[themed_bg][orig]blend=all_expr='{blend_expr}':enable='lte(t,{window:.3f})'[resolved]",
+                f"[resolved]{title_text_chain}[v_title]"
+            ]
+        else:
+            fc_parts = [
+                f"[0:v]split=2[orig][blur_in]",
+                f"[blur_in]{blur_chain}[blurred]",
+                f"[blurred][orig]blend=all_expr='{blend_expr}':enable='lte(t,{window:.3f})'[resolved]",
+                f"[resolved]{title_text_chain}[v_title]"
+            ]
 
         post_filters = []
         if fade_in > 0.0:
@@ -828,11 +949,14 @@ def _build_transition_filtergraph(
     video_files: List[str],
     transitions: Sequence[float | None],
     segment_durations: Sequence[float],
+    theme_preset: Optional[Any] = None,
 ) -> Tuple[List[str], str]:
     """Construct FFmpeg filtergraph inputs and filter_complex string for beat-matched transitions.
 
     Partitions clips into blocks separated by hard cuts (where transition is None).
     Inside each block, clips are crossfaded using xfade with exact duration and offset.
+    If a theme preset is provided with transition_tint_eq, a subtle matching color grade
+    shift or flash is applied during each crossfade blend window.
     Blocks are then joined via concat filter, preserving exact beat positions and total duration.
     """
     n = len(video_files)
@@ -865,6 +989,9 @@ def _build_transition_filtergraph(
             current_block = [i]
     blocks.append(current_block)
 
+    theme_tint = theme_preset.transition_tint_eq if (theme_preset and hasattr(theme_preset, 'transition_tint_eq')) else None
+    xfade_trans = theme_preset.xfade_transition if (theme_preset and hasattr(theme_preset, 'xfade_transition')) else "fade"
+
     filter_chains = []
     for b_idx, block in enumerate(blocks):
         if len(block) == 1:
@@ -878,10 +1005,20 @@ def _build_transition_filtergraph(
                 cj = block[j]
                 d = float(t_list[cj - 1])
                 offset = max(0.0, round(curr_dur - d, 4))
-                next_stream = f"[b{b_idx}]" if j == len(block) - 1 else f"[xf_{b_idx}_{j}]"
-                filter_chains.append(
-                    f"{prev_stream}[{cj}:v]xfade=transition=fade:duration={d:.3f}:offset={offset:.4f}{next_stream}"
-                )
+                if theme_tint:
+                    xf_raw = f"[xf_raw_{b_idx}_{j}]"
+                    next_stream = f"[b{b_idx}]" if j == len(block) - 1 else f"[xf_{b_idx}_{j}]"
+                    filter_chains.append(
+                        f"{prev_stream}[{cj}:v]xfade=transition={xfade_trans}:duration={d:.3f}:offset={offset:.4f}{xf_raw}"
+                    )
+                    filter_chains.append(
+                        f"{xf_raw}eq={theme_tint}:enable='between(t,{offset:.4f},{offset+d:.4f})'{next_stream}"
+                    )
+                else:
+                    next_stream = f"[b{b_idx}]" if j == len(block) - 1 else f"[xf_{b_idx}_{j}]"
+                    filter_chains.append(
+                        f"{prev_stream}[{cj}:v]xfade=transition={xfade_trans}:duration={d:.3f}:offset={offset:.4f}{next_stream}"
+                    )
                 prev_stream = next_stream
                 curr_dur = round(curr_dur + clip_lengths[cj] - d, 4)
 
@@ -904,16 +1041,22 @@ def concatenate_videos_ffmpeg(video_files: List[str], output_file: str,
                               gpu_encoder: str = 'h264_nvenc', fps: float = 30.0,
                               temp_dir: str = None,
                               transitions: Sequence[float | None] | None = None,
-                              segment_durations: Sequence[float] | None = None) -> str:
+                              segment_durations: Sequence[float] | None = None,
+                              title_theme: str | None = None,
+                              theme_preset: Optional[Any] = None) -> str:
     """
     Concatenate video files using FFmpeg.
-    If transitions are supplied and contain active crossfades, assembles via xfade + concat.
+    If transitions are supplied and contain active crossfades, assembles via xfade + concat,
+    applying any visual theme transition styling.
     Otherwise uses the fast stream-copy concat demuxer.
     
     ✅ FRAME-ACCURATE: Maintains precise timing through concatenation
     """
     if temp_dir is None:
         temp_dir = os.path.dirname(output_file)
+
+    if theme_preset is None and title_theme and resolve_theme:
+        theme_preset, _ = resolve_theme(title_theme)
 
     has_transitions = bool(
         transitions is not None
@@ -927,7 +1070,7 @@ def concatenate_videos_ffmpeg(video_files: List[str], output_file: str,
 
     if has_transitions:
         input_args, filter_complex = _build_transition_filtergraph(
-            video_files, transitions, segment_durations
+            video_files, transitions, segment_durations, theme_preset=theme_preset
         )
         fade_count = sum(1 for t in transitions if t and t > 0)
         cut_count = sum(1 for t in transitions if t is None or t <= 0)

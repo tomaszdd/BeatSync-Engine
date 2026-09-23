@@ -390,6 +390,9 @@ INFO_TRANSITIONS_ENABLED = "Smooth crossfades on weaker beats, keeping punchy ha
 LABEL_TITLE_CARD_ENABLED = "✨ Blur-to-sharp title card"
 INFO_TITLE_CARD_ENABLED = "Opening title card: footage starts blurred and dimmed under title text, then smoothly resolves to sharp video."
 
+LABEL_TITLE_THEME = "🎨 Title Theme"
+INFO_TITLE_THEME = "Local AI mood-matched typography, graphics, and wipes or choose a curated theme."
+
 WINDOWS_FONTS_DIR = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')
 
 # (display label, browser-preview CSS font stack, filename in the Windows fonts dir)

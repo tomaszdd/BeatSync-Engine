@@ -351,6 +351,12 @@ def parse_arguments() -> argparse.Namespace:
         default='',
         help='Title text for opening title card or overlay (default: empty)'
     )
+    parser.add_argument(
+        '--title-theme',
+        type=str,
+        default='Auto (AI mood match)',
+        help='Visual title theme: "Auto (AI mood match)", "Warm & Sentimental", "Joyful & Bright", or "Upbeat & Energetic"'
+    )
 
     return parser.parse_args()
 
@@ -936,7 +942,8 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                       image_capture_times: Dict[str, float] | None = None,
                       debug_callback: Callable[[str], None] | None = None,
                       transitions_enabled: bool = True,
-                      title_card_enabled: bool = False) -> str:
+                      title_card_enabled: bool = False,
+                      title_theme: str = 'Auto (AI mood match)') -> str:
     """
     Creates a music video with video clips cut to detected beats.
     
@@ -1156,6 +1163,28 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
 
     if planned_clip_sequence:
         plan_summary = summarize_clip_plan(planned_clip_sequence)
+        from title_theme import resolve_theme, THEME_AUTO
+        theme_preset, mood_signature = resolve_theme(
+            theme_choice=title_theme,
+            clips=planned_clip_sequence,
+            beat_info=beat_info,
+        )
+        print(f"\n{'='*60}")
+        print(f"🎨 TITLE THEME & VISUAL TREATMENT: {theme_preset.name}")
+        print(f"   Reason: {mood_signature.reason}")
+        print(f"   Warmth: {mood_signature.warmth:.2f} | Energy: {mood_signature.energy:.2f} | Dominant Emotion: {mood_signature.dominant_emotion}")
+        print(f"   Title Font: {os.path.basename(theme_preset.title_font)}")
+        print(f"   Subtitle Font: {os.path.basename(theme_preset.subtitle_font)}")
+        print(f"{'='*60}\n")
+        render_info["title_theme"] = theme_preset.name
+        render_info["mood_signature"] = {
+            "warmth": mood_signature.warmth,
+            "energy": mood_signature.energy,
+            "dominant_emotion": mood_signature.dominant_emotion,
+            "selected_theme": mood_signature.selected_theme,
+            "reason": mood_signature.reason,
+        }
+
         if beat_info is not None:
             beat_info['clip_plan_summary'] = plan_summary
             render_info["plan_summary"] = plan_summary
@@ -1167,6 +1196,14 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                 'beat_times': [float(t) for t in beat_times],
                 'fps': float(fps),
                 'audio_duration': float(audio_duration),
+                'title_theme': theme_preset.name,
+                'mood_signature': {
+                    'warmth': mood_signature.warmth,
+                    'energy': mood_signature.energy,
+                    'dominant_emotion': mood_signature.dominant_emotion,
+                    'selected_theme': mood_signature.selected_theme,
+                    'reason': mood_signature.reason,
+                },
             }
         print(f"🧠 Auto visual planner: {plan_summary['clip_count']} planned clips")
         print(f"   Sources used: {plan_summary.get('source_count', 0)}")
@@ -1260,6 +1297,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             temp_dir=session_temp_dir,
             transitions=transitions,
             segment_durations=segment_durations,
+            theme_preset=theme_preset,
         )
         
         print(f"\n{'='*60}")
@@ -1308,6 +1346,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             end_duration=end_text_duration, use_nvenc=False, fps=fps, font_file=text_font_file,
             fade_in=fade_in_seconds, fade_out=fade_out_seconds,
             title_card_enabled=title_card_enabled,
+            theme_preset=theme_preset,
         )
         return output_file
     
@@ -1416,6 +1455,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             temp_dir=session_temp_dir,
             transitions=transitions,
             segment_durations=segment_durations,
+            theme_preset=theme_preset,
         )
         assembly_seconds = time.perf_counter() - assembly_started
         render_info["final_assembly_seconds"] = float(assembly_seconds)
@@ -1456,6 +1496,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             end_duration=end_text_duration, use_nvenc=use_nvenc, gpu_encoder=gpu_encoder, fps=fps,
             font_file=text_font_file, fade_in=fade_in_seconds, fade_out=fade_out_seconds,
             title_card_enabled=title_card_enabled,
+            theme_preset=theme_preset,
         )
         return output_file
  
@@ -1574,6 +1615,7 @@ def main() -> None:
         transitions_enabled=args.transitions,
         title_card_enabled=args.title_card,
         start_text=args.start_text,
+        title_theme=args.title_theme,
     )
  
     print(f'✅ Music video created successfully: {output_file}')
