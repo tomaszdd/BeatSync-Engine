@@ -117,6 +117,50 @@ def _path_signature_token(path: str) -> str:
         return f"{os.path.basename(path)}:missing"
 
 
+_CONTENT_SIGNATURE_CACHE: Dict[str, str] = {}
+
+
+def _content_signature_token(path: str, sample_bytes: int = 4 * 1024 * 1024) -> str:
+    """Content-based signature for a backend binary/model file.
+
+    Unlike `_path_signature_token`, this ignores mtime. The Qwen backend files
+    (model/mmproj/server/mtmd) live under `bin/` and get re-copied wholesale
+    from persistent storage whenever the app's scratch environment is rebuilt;
+    a copy is not guaranteed to preserve mtime, so an mtime-based cache key
+    can change on every rebuild even though the bytes are byte-for-byte
+    identical, silently invalidating every video-analysis cache entry. Hashing
+    the full multi-GB model on every call would be too slow to do per source
+    video, so this samples the head/tail of the file (cheap, still catches any
+    real content swap in practice) and memoizes per (path, size) for the
+    lifetime of the process.
+    """
+    norm_path = os.path.normcase(os.path.abspath(path))
+    try:
+        stat = os.stat(norm_path)
+    except OSError:
+        return f"{os.path.basename(path)}:missing"
+
+    cache_key = f"{norm_path}:{stat.st_size}"
+    cached = _CONTENT_SIGNATURE_CACHE.get(cache_key)
+    if cached:
+        return cached
+
+    hasher = hashlib.sha1()
+    hasher.update(str(stat.st_size).encode("utf-8"))
+    try:
+        with open(norm_path, "rb") as f:
+            hasher.update(f.read(sample_bytes))
+            if stat.st_size > sample_bytes:
+                f.seek(max(0, stat.st_size - sample_bytes))
+                hasher.update(f.read(sample_bytes))
+        token = f"{os.path.basename(path)}:{stat.st_size}:{hasher.hexdigest()[:16]}"
+    except OSError:
+        token = f"{os.path.basename(path)}:{stat.st_size}:unreadable"
+
+    _CONTENT_SIGNATURE_CACHE[cache_key] = token
+    return token
+
+
 def _llama_version_token(llama_dir: str) -> str:
     llama_dir = os.path.abspath(llama_dir)
     cached = _LLAMA_VERSION_TOKENS.get(llama_dir)
@@ -157,11 +201,10 @@ def _qwen_backend_signature_token(qwen_model_path: str | None) -> str:
         return "ai_missing"
     raw = "|".join([
         "llama_vulkan",
-        _path_signature_token(paths["model"]),
-        _path_signature_token(paths["mmproj"]),
-        _path_signature_token(paths["server"]),
-        _path_signature_token(paths["mtmd"]),
-        _llama_version_token(paths["llama_dir"]),
+        _content_signature_token(paths["model"]),
+        _content_signature_token(paths["mmproj"]),
+        _content_signature_token(paths["server"]),
+        _content_signature_token(paths["mtmd"]),
     ])
     return "ai_" + _hash_text(raw, length=20)
 
@@ -173,7 +216,7 @@ def _video_signature(video_file: str, enable_ai: bool, qwen_model_path: str | No
         model_token = _qwen_backend_signature_token(qwen_model_path)
     raw = "|".join([
         ANALYSIS_VERSION,
-        os.path.abspath(video_file),
+        os.path.normcase(os.path.abspath(video_file)),
         str(stat.st_size),
         str(int(stat.st_mtime)),
         model_token,
