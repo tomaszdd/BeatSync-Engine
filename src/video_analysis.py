@@ -1126,11 +1126,16 @@ def _measure_frame_samples(frames: Sequence[np.ndarray], sample_times: np.ndarra
     gray_frames = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
     hsv_frames = [cv2.cvtColor(f, cv2.COLOR_BGR2HSV) for f in frames]
 
-    brightness = float(np.mean([np.mean(g) / 255.0 for g in gray_frames]))
+    lum_values = [float(np.mean(g) / 255.0) for g in gray_frames]
+    brightness = float(np.mean(lum_values)) if lum_values else 0.0
     contrast = float(np.mean([np.std(g) / 80.0 for g in gray_frames]))
     saturation = float(np.mean([np.mean(h[:, :, 1]) / 255.0 for h in hsv_frames]))
-    blur_values = [cv2.Laplacian(g, cv2.CV_64F).var() for g in gray_frames]
-    sharpness = _clamp(np.mean(blur_values) / 520.0)
+    blur_values = [float(cv2.Laplacian(g, cv2.CV_64F).var()) for g in gray_frames]
+    min_luminance = float(np.min(lum_values)) if lum_values else 0.0
+    mean_luminance = brightness
+    min_laplacian = float(np.min(blur_values)) if blur_values else 0.0
+    mean_laplacian = float(np.mean(blur_values)) if blur_values else 0.0
+    sharpness = _clamp(mean_laplacian / 520.0)
 
     motion_values = []
     peak_offset = duration * 0.5
@@ -1159,9 +1164,13 @@ def _measure_frame_samples(frames: Sequence[np.ndarray], sample_times: np.ndarra
     return {
         "duration": duration,
         "brightness": _clamp(brightness),
+        "min_luminance": min_luminance,
+        "mean_luminance": mean_luminance,
         "contrast": _clamp(contrast),
         "saturation": _clamp(saturation),
         "sharpness": _clamp(sharpness),
+        "min_laplacian": min_laplacian,
+        "mean_laplacian": mean_laplacian,
         "motion": _clamp(motion),
         "colorfulness": _clamp(colorfulness),
         "quality_score": quality,
@@ -1225,12 +1234,23 @@ def _measure_frames_gpu(frames: Sequence[np.ndarray], sample_times: np.ndarray,
         + 0.10 * (1.0 - blown_penalty)
     )
 
+    frame_lums = cp.asnumpy(cp.mean(gray, axis=(1, 2)) / 255.0)
+    frame_laps = cp.asnumpy(cp.var(lap, axis=(1, 2)))
+    min_luminance = float(np.min(frame_lums)) if len(frame_lums) else 0.0
+    mean_luminance = brightness
+    min_laplacian = float(np.min(frame_laps)) if len(frame_laps) else 0.0
+    mean_laplacian = float(np.mean(frame_laps)) if len(frame_laps) else 0.0
+
     return {
         "duration": duration,
         "brightness": _clamp(brightness),
+        "min_luminance": min_luminance,
+        "mean_luminance": mean_luminance,
         "contrast": _clamp(contrast),
         "saturation": _clamp(saturation),
         "sharpness": _clamp(sharpness),
+        "min_laplacian": min_laplacian,
+        "mean_laplacian": mean_laplacian,
         "motion": _clamp(motion),
         "colorfulness": _clamp(colorfulness),
         "quality_score": quality,
@@ -1324,9 +1344,13 @@ def _build_candidate(
         "kind": window.get("kind", "scene"),
         "motion": motion,
         "brightness": brightness,
+        "min_luminance": metrics.get("min_luminance", brightness),
+        "mean_luminance": metrics.get("mean_luminance", brightness),
         "contrast": contrast,
         "saturation": saturation,
         "sharpness": sharpness,
+        "min_laplacian": metrics.get("min_laplacian"),
+        "mean_laplacian": metrics.get("mean_laplacian"),
         "colorfulness": colorfulness,
         "quality_score": quality,
         "action_score": action,

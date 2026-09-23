@@ -1,2 +1,4 @@
 src/__pycache__/*
 src/auto_mode/__pycache__/*
+tests/__pycache__/*
+__pycache__/

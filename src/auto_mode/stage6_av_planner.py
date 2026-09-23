@@ -113,16 +113,26 @@ def _buffered_start_bounds(video_duration: float, source_duration: float, edge_b
 
 
 def _no_subject_score(candidate: Dict) -> float:
-    """0..1 confidence this candidate is a dead (no-subject) floor/pocket/sky shot.
+    """0..1 confidence this candidate is a dead (no-subject) floor/pocket/sky shot
+    or unusable due to near-pitch darkness or severe motion blur.
 
-    Combines the subject-detection spec's three independent layers -- GoPro
-    telemetry (Layer 0), the YOLO subject_confidence (Layer 1), and Qwen's
+    Combines deterministic quality checks (near-black frame or severe motion blur
+    whip-pan smears) with the subject-detection spec's three independent layers --
+    GoPro telemetry (Layer 0), the YOLO subject_confidence (Layer 1), and Qwen's
     subject_visible/framing_issue (Layer 2, folded into subject_confidence
     already in video_analysis._merge_semantic) -- as corroborating signals
     rather than a strict pipeline: when several agree, confidence is boosted
     beyond a plain average, but any single absent/unavailable signal is simply
     skipped rather than counted as evidence either way.
     """
+    try:
+        from subject_detection import is_unusable_quality
+        unusable, _ = is_unusable_quality(candidate)
+        if unusable:
+            return 1.0
+    except Exception:
+        pass
+
     signals: List[float] = []
 
     pointed_down = candidate.get("telemetry_pointed_down")
@@ -150,25 +160,48 @@ def _no_subject_score(candidate: Dict) -> float:
     return _clamp(base)
 
 
-def filter_no_subject_candidates(candidates: Sequence[Dict], min_subject_confidence: float) -> List[Dict]:
-    """Drop candidates whose combined no-subject signal beats the configured floor.
+def filter_no_subject_candidates(
+    candidates: Sequence[Dict],
+    min_subject_confidence: float,
+    debug_callback: Optional[Callable[[str], None]] = None,
+) -> List[Dict]:
+    """Drop candidates that fail deterministic quality checks (near-black frame or
+    severe motion blur) or whose combined no-subject signal beats the configured floor.
 
-    min_subject_confidence <= 0 means the GUI setting is off (default): every
-    candidate passes through unchanged, identical to pre-subject-detection
-    behavior. Otherwise a candidate is kept only when its "real subject"
-    confidence (1 - no_subject_score) meets the threshold -- a floor/pocket
-    shot should not be able to outscore a real person-shot no matter how
-    sharp/well-lit it is, so this is a hard exclusion from the pool, not a
-    soft score penalty.
+    Always-on deterministic quality filter: genuinely-black or severely motion-blurred
+    candidates are excluded regardless of subject_confidence score.
+    min_subject_confidence <= 0 means the subject-confidence floor is off (default),
+    but quality-unusable candidates remain excluded. Otherwise a candidate is kept only
+    when its "real subject" confidence (1 - no_subject_score) meets the threshold.
     """
+    quality_kept: List[Dict] = []
+    dropped_quality = 0
+    try:
+        from subject_detection import is_unusable_quality
+        for c in candidates:
+            unusable, reason = is_unusable_quality(c)
+            if unusable:
+                dropped_quality += 1
+                continue
+            quality_kept.append(c)
+    except Exception:
+        quality_kept = list(candidates)
+
+    usable_pool = quality_kept if quality_kept else list(candidates)
+    if dropped_quality > 0 and debug_callback:
+        debug_callback(
+            f"Quality filter: dropped {dropped_quality} unusable candidates (darkness/motion-blur), "
+            f"{len(usable_pool)} retained"
+        )
+
     min_subject_confidence = _clamp(min_subject_confidence)
     if min_subject_confidence <= 0.0:
-        return list(candidates)
+        return usable_pool
     kept = [
-        c for c in candidates
+        c for c in usable_pool
         if (1.0 - _no_subject_score(c)) >= min_subject_confidence
     ]
-    return kept if kept else list(candidates)
+    return kept if kept else usable_pool
 
 
 def _is_image_loop_video(video_file: str) -> bool:
@@ -282,7 +315,7 @@ def build_planned_clip_sequence(
     video_analysis = beat_info.get("video_analysis") or {}
     candidates = list(video_analysis.get("candidates") or [])
     candidates = [c for c in candidates if c.get("video_file")]
-    candidates = filter_no_subject_candidates(candidates, min_subject_confidence)
+    candidates = filter_no_subject_candidates(candidates, min_subject_confidence, debug_callback=debug_callback)
     if not candidates:
         return []
 
