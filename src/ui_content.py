@@ -345,6 +345,13 @@ INFO_CLIP_ORDER_MODE = (
     "shot is held rather than looping back to the start."
 )
 
+LABEL_MIN_SUBJECT_CONFIDENCE = "🙈 Filter shots with no visible subject"
+INFO_MIN_SUBJECT_CONFIDENCE = (
+    "Off (0) keeps every shot, including establishing/scenery shots. Above 0, clips the "
+    "GoPro-telemetry, YOLO person-detection, and AI-vision layers agree have no visible "
+    "subject (floor, pocket, sky, blank shots) are excluded — higher values are stricter."
+)
+
 LABEL_FIRST_VIDEO = "⏮️ First video"
 INFO_FIRST_VIDEO = "This video provides the very first clip in the final video."
 LABEL_LAST_VIDEO = "⏭️ Last video"

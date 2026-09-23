@@ -112,6 +112,65 @@ def _buffered_start_bounds(video_duration: float, source_duration: float, edge_b
     return lo, hi
 
 
+def _no_subject_score(candidate: Dict) -> float:
+    """0..1 confidence this candidate is a dead (no-subject) floor/pocket/sky shot.
+
+    Combines the subject-detection spec's three independent layers -- GoPro
+    telemetry (Layer 0), the YOLO subject_confidence (Layer 1), and Qwen's
+    subject_visible/framing_issue (Layer 2, folded into subject_confidence
+    already in video_analysis._merge_semantic) -- as corroborating signals
+    rather than a strict pipeline: when several agree, confidence is boosted
+    beyond a plain average, but any single absent/unavailable signal is simply
+    skipped rather than counted as evidence either way.
+    """
+    signals: List[float] = []
+
+    pointed_down = candidate.get("telemetry_pointed_down")
+    if pointed_down is not None:
+        signals.append(float(pointed_down))
+
+    jerk = candidate.get("telemetry_jerk_score")
+    if jerk is not None:
+        # Jerk alone is weaker evidence of "no subject" than of "unstable
+        # footage" (a jerky shot can still have a person in frame) -- verified
+        # against this project's own GoPro footage, see SUBJECT_DETECTION_REPORT.md.
+        signals.append(0.7 * float(jerk))
+
+    subject_confidence = candidate.get("subject_confidence")
+    if subject_confidence is not None:
+        signals.append(1.0 - float(subject_confidence))
+
+    if not signals:
+        return 0.0
+
+    base = sum(signals) / len(signals)
+    strong = sum(1 for s in signals if s > 0.6)
+    if strong >= 2:
+        base = min(1.0, base + 0.15)
+    return _clamp(base)
+
+
+def filter_no_subject_candidates(candidates: Sequence[Dict], min_subject_confidence: float) -> List[Dict]:
+    """Drop candidates whose combined no-subject signal beats the configured floor.
+
+    min_subject_confidence <= 0 means the GUI setting is off (default): every
+    candidate passes through unchanged, identical to pre-subject-detection
+    behavior. Otherwise a candidate is kept only when its "real subject"
+    confidence (1 - no_subject_score) meets the threshold -- a floor/pocket
+    shot should not be able to outscore a real person-shot no matter how
+    sharp/well-lit it is, so this is a hard exclusion from the pool, not a
+    soft score penalty.
+    """
+    min_subject_confidence = _clamp(min_subject_confidence)
+    if min_subject_confidence <= 0.0:
+        return list(candidates)
+    kept = [
+        c for c in candidates
+        if (1.0 - _no_subject_score(c)) >= min_subject_confidence
+    ]
+    return kept if kept else list(candidates)
+
+
 def _is_image_loop_video(video_file: str) -> bool:
     """True for the synthetic per-image loop videos created by prepare_visual_sources()."""
     return os.path.basename(str(video_file)).startswith("image_source_")
@@ -196,6 +255,7 @@ def build_planned_clip_sequence(
     first_video: str | None = None,
     last_video: str | None = None,
     image_capture_times: Dict[str, float] | None = None,
+    min_subject_confidence: float = 0.0,
     debug_callback=None,
 ) -> List[Dict]:
     """Build exact source clip choices for every output segment.
@@ -213,12 +273,16 @@ def build_planned_clip_sequence(
     first_video/last_video: when given, pin the very first/last output segment
     to a clip from that source video (falls back to normal selection if that
     video has no usable candidate for the segment).
+    min_subject_confidence: 0 (default) keeps all candidates. Above 0, drops
+    candidates the subject-detection layers agree have no visible subject
+    (floor/pocket/sky shots) before any scoring or selection happens.
     """
     edge_buffer_seconds = max(0.0, float(edge_buffer_seconds))
     beat_info = beat_info or {}
     video_analysis = beat_info.get("video_analysis") or {}
     candidates = list(video_analysis.get("candidates") or [])
     candidates = [c for c in candidates if c.get("video_file")]
+    candidates = filter_no_subject_candidates(candidates, min_subject_confidence)
     if not candidates:
         return []
 

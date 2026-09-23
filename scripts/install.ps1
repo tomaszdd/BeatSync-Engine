@@ -321,6 +321,39 @@ function Install-QwenGgufModels {
     Download-File $QwenMmprojUrl (Join-Path $ModelsDir "mmproj-Qwen3VL-2B-Instruct-F16.gguf") 104857600
 }
 
+function Install-YoloOnnxModel($UvExe) {
+    Step "Exporting YOLOv8n ONNX subject-detection model"
+    Ensure-Dir $ModelsDir
+    $OnnxPath = Join-Path $ModelsDir "yolov8n.onnx"
+    if (Test-Path $OnnxPath) {
+        Write-Host "Already present: $OnnxPath"
+        return
+    }
+    # Exported once via a throwaway venv, not the app's real environment: `ultralytics`
+    # hard-depends on PyTorch even for a one-shot ONNX export, and this app deliberately
+    # has no PyTorch in its real environment (see Remove-LegacyPythonPackages below).
+    # Only onnxruntime (already in requirements.txt, no PyTorch dependency) is needed
+    # at runtime to use the exported .onnx file -- see subject_detection.py.
+    $ExportVenv = Join-Path $DownloadsDir "yolo_export_venv"
+    if (Test-Path $ExportVenv) {
+        Remove-Item -LiteralPath $ExportVenv -Recurse -Force
+    }
+    & $UvExe venv $ExportVenv --python $PythonExe --seed
+    if ($LASTEXITCODE -ne 0) { throw "UV failed while creating the throwaway YOLO export venv." }
+    $ExportPython = Join-Path $ExportVenv "Scripts\python.exe"
+    & $UvExe pip install --python $ExportPython ultralytics onnx onnxslim
+    if ($LASTEXITCODE -ne 0) { throw "UV failed while installing ultralytics for the ONNX export." }
+    Push-Location $ExportVenv
+    try {
+        & $ExportPython -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='onnx', imgsz=320, simplify=True, opset=12)"
+        if ($LASTEXITCODE -ne 0) { throw "YOLOv8n ONNX export failed." }
+        Move-Item -Force (Join-Path $ExportVenv "yolov8n.onnx") $OnnxPath
+    } finally {
+        Pop-Location
+    }
+    Remove-Item -LiteralPath $ExportVenv -Recurse -Force
+}
+
 function Ensure-AppFolders {
     Step "Creating app folders"
     foreach ($Path in @(
@@ -386,6 +419,7 @@ Install-LlamaCppVulkan
 Install-PythonPackages $UvExe
 Remove-LegacyPythonPackages $UvExe
 Install-QwenGgufModels
+Install-YoloOnnxModel $UvExe
 
 Step "Verifying portable install"
 & $PythonExe -X utf8 -c "import sys, gradio, librosa, cv2, numpy, cupy, numba; print('Python', sys.version.split()[0]); print('gradio', gradio.__version__); print('librosa', librosa.__version__); print('cupy', cupy.__version__); print('numba', numba.__version__); x = cupy.arange(10, dtype=cupy.int32); print('CUDA runtime', cupy.cuda.runtime.runtimeGetVersion()); print('GPU sum', int(cupy.sum(x).get()))"
@@ -403,6 +437,7 @@ Test-RequiredFile (Join-Path $LlamaDir "llama-mtmd-cli.exe") "llama-mtmd-cli.exe
 Test-RequiredFile (Join-Path $LlamaDir "llama-cli.exe") "llama-cli.exe"
 Test-RequiredFile (Join-Path $ModelsDir "Qwen3VL-2B-Instruct-Q8_0.gguf") "Qwen GGUF model"
 Test-RequiredFile (Join-Path $ModelsDir "mmproj-Qwen3VL-2B-Instruct-F16.gguf") "Qwen mmproj model"
+Test-RequiredFile (Join-Path $ModelsDir "yolov8n.onnx") "YOLOv8n ONNX subject-detection model"
 
 & (Join-Path $LlamaDir "llama-cli.exe") --version
 if ($LASTEXITCODE -ne 0) {

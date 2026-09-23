@@ -28,12 +28,14 @@ from ffmpeg_processing import (
     get_video_fps,
     get_video_resolution,
 )
+from gopro_telemetry import extract_gopro_telemetry, telemetry_lookup
 from logger import ROOT_DIR, setup_environment
+from subject_detection import score_subject_confidence
 
 
 setup_environment()
 
-ANALYSIS_VERSION = "auto_av_analysis_v8_llama_vulkan_batched"
+ANALYSIS_VERSION = "auto_av_analysis_v9_subject_detection"
 DEFAULT_QWEN_MODEL_DIR = os.path.join(ROOT_DIR, "bin", "models")
 DEFAULT_QWEN_GGUF_MODEL = os.path.join(DEFAULT_QWEN_MODEL_DIR, "Qwen3VL-2B-Instruct-Q8_0.gguf")
 DEFAULT_QWEN_MMPROJ_MODEL = os.path.join(DEFAULT_QWEN_MODEL_DIR, "mmproj-Qwen3VL-2B-Instruct-F16.gguf")
@@ -532,6 +534,17 @@ def _analyze_single_video(
         f"[{_fmt_seconds(timings['window_build_seconds'])}]"
     )
 
+    # Layer 0 (subject-detection spec): GoPro GPMF telemetry pre-filter. No-op
+    # (returns None) for non-GoPro sources, which have no gpmd track at all.
+    step_started = time.perf_counter()
+    gopro_telemetry = extract_gopro_telemetry(video_file)
+    timings["telemetry_seconds"] = time.perf_counter() - step_started
+    if gopro_telemetry:
+        print(
+            f"      GoPro telemetry: {len(gopro_telemetry['buckets'])} buckets over "
+            f"{gopro_telemetry['duration']:.1f}s [{_fmt_seconds(timings['telemetry_seconds'])}]"
+        )
+
     cap = _open_video_capture(video_file)
     candidates: List[Dict] = []
     if cap.isOpened():
@@ -549,6 +562,7 @@ def _analyze_single_video(
                 continue
             valid_metrics += 1
             candidate = _build_candidate(video_file, name, duration, i, window, metrics)
+            candidate.update(telemetry_lookup(gopro_telemetry, candidate["start"], candidate["end"]))
             candidates.append(candidate)
         cap.release()
         print(
@@ -1053,9 +1067,16 @@ def _measure_frame_samples(frames: Sequence[np.ndarray], sample_times: np.ndarra
     if not frames:
         return {}
 
+    # Layer 1 (subject-detection spec): reuse this window's already-decoded
+    # middle sample frame for a cheap CPU person/subject check, instead of
+    # decoding anything extra.
+    subject_confidence = score_subject_confidence([frames[len(frames) // 2]])
+
     if use_gpu and GPU_AVAILABLE and cp is not None:
         try:
-            return _measure_frames_gpu(frames, sample_times, start, duration)
+            gpu_metrics = _measure_frames_gpu(frames, sample_times, start, duration)
+            gpu_metrics["subject_confidence"] = subject_confidence
+            return gpu_metrics
         except Exception:
             pass
 
@@ -1102,6 +1123,7 @@ def _measure_frame_samples(frames: Sequence[np.ndarray], sample_times: np.ndarra
         "colorfulness": _clamp(colorfulness),
         "quality_score": quality,
         "peak_offset": _clamp(peak_offset, 0.0, duration, default=duration * 0.5),
+        "subject_confidence": subject_confidence,
     }
 
 
@@ -1272,6 +1294,7 @@ def _build_candidate(
         "tags": tags,
         "semantic": semantic,
         "ai_analyzed": False,
+        "subject_confidence": metrics.get("subject_confidence"),
     }
 
 
@@ -1479,12 +1502,29 @@ def _merge_semantic(candidate: Dict, semantic: Dict) -> None:
     for key in numeric_keys:
         if key in semantic:
             merged[key] = _clamp(semantic[key])
+    if "subject_visible" in semantic:
+        merged["subject_visible"] = _clamp(semantic["subject_visible"])
     for key in ["emotion", "recommended_use", "description"]:
         if semantic.get(key):
             merged[key] = str(semantic[key])[:160]
+    if semantic.get("framing_issue"):
+        merged["framing_issue"] = str(semantic["framing_issue"])[:24]
 
     candidate["semantic"] = merged
     candidate["ai_analyzed"] = True
+
+    # Layer 2 (subject-detection spec): refine Layer 1's YOLO subject_confidence
+    # with Qwen's subject_visible verdict on the same frame, same blend pattern
+    # as beauty/quality above -- Layer 1 stays dominant when both are present so
+    # a Qwen hallucination alone can't flip the signal.
+    if "subject_visible" in merged:
+        layer1_subject = candidate.get("subject_confidence")
+        if layer1_subject is None:
+            candidate["subject_confidence"] = _clamp(merged["subject_visible"])
+        else:
+            candidate["subject_confidence"] = _clamp(
+                0.55 * float(layer1_subject) + 0.45 * float(merged["subject_visible"])
+            )
 
     deterministic_action = _clamp(candidate.get("action_score", 0.0))
     deterministic_motion = _clamp(candidate.get("motion", 0.0))

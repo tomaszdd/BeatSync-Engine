@@ -844,6 +844,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                       clip_order_mode: str = "auto",
                       first_video: str | None = None,
                       last_video: str | None = None,
+                      min_subject_confidence: float = 0.0,
                       target_resolution: Tuple[int, int] | None = None,
                       start_text: str = '',
                       start_text_position: str = 'bottom_center',
@@ -886,6 +887,9 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             alphabetical filename order)
         first_video: source video pinned to the very first output segment
         last_video: source video pinned to the very last output segment
+        min_subject_confidence: 0 (default) keeps today's behavior. Above 0, the
+            AV planner drops candidates the subject-detection layers agree have
+            no visible subject (floor/pocket/sky shots) before scoring/selection.
         start_text/end_text: optional titles burned into the start/end of the output
         text_font_file: .ttf used for the start/end titles
         fade_in_seconds/fade_out_seconds: length of the opening/closing black fade
@@ -1022,6 +1026,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             first_video=first_video,
             last_video=last_video,
             image_capture_times=image_capture_times,
+            min_subject_confidence=min_subject_confidence,
             debug_callback=debug_callback,
         )
         if not planned_clip_sequence:

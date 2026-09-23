@@ -46,21 +46,27 @@ NUMERIC_KEYS = [
     "character_focus",
     "camera_motion",
     "visual_quality",
+    "subject_visible",
 ]
 ALLOWED_EMOTIONS = {"soft", "tension", "hype", "sad", "neutral"}
 ALLOWED_USES = {"drop", "soft", "build", "transition", "flow", "filler"}
+# subject-detection spec Layer 2: is a person/subject actually visible in frame,
+# and if not, what kind of dead shot is it (floor/pocket/sky/blank) vs. simply
+# motion-blurred. "none" means no framing issue -- a normal, usable shot.
+ALLOWED_FRAMING_ISSUES = {"none", "floor", "pocket", "sky", "blank", "motion_blur"}
 SEMANTIC_SCHEMA = {
     "type": "object",
     "properties": {
         key: {"type": "number", "minimum": 0, "maximum": 1}
         for key in NUMERIC_KEYS
     },
-    "required": NUMERIC_KEYS + ["emotion", "recommended_use", "description"],
+    "required": NUMERIC_KEYS + ["emotion", "recommended_use", "framing_issue", "description"],
     "additionalProperties": False,
 }
 SEMANTIC_SCHEMA["properties"].update({
     "emotion": {"type": "string", "enum": sorted(ALLOWED_EMOTIONS)},
     "recommended_use": {"type": "string", "enum": sorted(ALLOWED_USES)},
+    "framing_issue": {"type": "string", "enum": sorted(ALLOWED_FRAMING_ISSUES)},
     "description": {"type": "string"},
 })
 
@@ -254,12 +260,16 @@ def _normalize_semantic(data: Dict) -> Dict:
     recommended_use = str(data.get("recommended_use", "")).strip().lower()
     if recommended_use not in ALLOWED_USES:
         return {}
+    framing_issue = str(data.get("framing_issue", "")).strip().lower()
+    if framing_issue not in ALLOWED_FRAMING_ISSUES:
+        return {}
 
     description = str(data.get("description", "")).strip()
     if not description:
         return {}
     out["emotion"] = emotion
     out["recommended_use"] = recommended_use
+    out["framing_issue"] = framing_issue
     out["description"] = description[:160]
     return out
 
@@ -274,9 +284,14 @@ def _build_prompt(audio_profile: Dict) -> str:
         "You are tagging one source-video moment for professional AMV/GMV editing. "
         f"The music edit style is {style_hint}. "
         "Return JSON only. Keys: action_intensity, beauty_score, combat, chase, explosion, "
-        "character_focus, camera_motion, visual_quality as numbers 0..1; "
+        "character_focus, camera_motion, visual_quality, subject_visible as numbers 0..1 "
+        "(subject_visible: is a person or other clear foreground subject actually visible "
+        "in frame, as opposed to blank floor/ceiling/wall or pocket darkness -- 0 means no "
+        "subject at all); "
         "emotion as one of soft,tension,hype,sad,neutral; "
         "recommended_use as one of drop,soft,build,transition,flow,filler; "
+        "framing_issue as one of none,floor,pocket,sky,blank,motion_blur (none if the shot "
+        "is normal and usable); "
         "description under 12 words. Do not include markdown."
     )
 
