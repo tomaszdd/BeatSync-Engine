@@ -1,0 +1,21 @@
+{
+  "run1_title_card_enabled": {
+    "video_file": "music_video_leak_fixed_20260924_125310.mp4",
+    "render_duration_s": 112.54,
+    "video_duration": 60.0,
+    "video_packets": 1800,
+    "audio_duration": 60.017396,
+    "audio_packets": 3767,
+    "encoder": "Lavc63.1.102 h264_amf",
+    "pix_fmt": "yuvj420p",
+    "r_frame_rate": "30/1"
+  },
+  "run2_title_card_disabled": {
+    "video_file": "music_video_notitle_spotcheck_20260924_125508.mp4",
+    "render_duration_s": 80.09,
+    "video_duration": 60.0,
+    "video_packets": 1800,
+    "audio_duration": 60.017396,
+    "encoder": "Lavc63.1.102 h264_amf"
+  }
+}

@@ -570,9 +570,9 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
             f"scale={frame_w}:{frame_h}:flags=bilinear"
         )
         blend_expr = (
-            f"if(lte(T,{t_hold:.3f}),A,"
-            f"if(gte(T,{window:.3f}),B,"
-            f"A*(1-(T-{t_hold:.3f})/{t_fade:.3f})+B*((T-{t_hold:.3f})/{t_fade:.3f})))"
+            f"if(lte(T,{t_hold:.3f}),B,"
+            f"if(gte(T,{window:.3f}),A,"
+            f"B*(1-(T-{t_hold:.3f})/{t_fade:.3f})+A*((T-{t_hold:.3f})/{t_fade:.3f})))"
         )
 
         # Themed procedural graphic overlay
@@ -610,14 +610,14 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
                 f"[blur_in]{blur_chain}[blurred]",
                 graphic_src,
                 graphic_blend,
-                f"[themed_bg][orig]blend=all_expr='{blend_expr}':enable='lte(t,{window:.3f})'[resolved]",
+                f"[orig][themed_bg]blend=all_expr='{blend_expr}':enable='lte(t,{window:.3f})'[resolved]",
                 f"[resolved]{title_text_chain}[v_title]"
             ]
         else:
             fc_parts = [
                 f"[0:v]split=2[orig][blur_in]",
                 f"[blur_in]{blur_chain}[blurred]",
-                f"[blurred][orig]blend=all_expr='{blend_expr}':enable='lte(t,{window:.3f})'[resolved]",
+                f"[orig][blurred]blend=all_expr='{blend_expr}':enable='lte(t,{window:.3f})'[resolved]",
                 f"[resolved]{title_text_chain}[v_title]"
             ]
 

@@ -4,6 +4,7 @@
 import os
 import sys
 import unittest
+import unittest.mock
 
 SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if SRC_DIR not in sys.path:
@@ -151,6 +152,61 @@ class TestTitleTheme(unittest.TestCase):
         # Without preset, no eq tint should be injected
         self.assertNotIn("eq=", filter_str)
 
+    @unittest.mock.patch("ffmpeg_processing._run_media_command")
+    @unittest.mock.patch("ffmpeg_processing.os.replace")
+    @unittest.mock.patch("ffmpeg_processing.get_video_resolution", return_value=(1920, 1080))
+    @unittest.mock.patch("ffmpeg_processing.get_video_duration", return_value=60.0)
+    @unittest.mock.patch("ffmpeg_processing.get_video_fps", return_value=30.0)
+    def test_title_card_blend_order_prevents_leak(self, mock_fps, mock_dur, mock_res, mock_replace, mock_run):
+        from ffmpeg_processing import add_text_overlays_ffmpeg
+        from title_theme import ThemePreset
+        mock_run.return_value = unittest.mock.MagicMock(returncode=0, stderr="")
+
+        # 1. With graphic overlay (e.g. Warm & Sentimental)
+        preset_warm = THEME_PRESETS[THEME_WARM_SENTIMENTAL]
+        add_text_overlays_ffmpeg(
+            "dummy_video.mp4",
+            start_text="Teresa S. Dunn\n1st October 2025",
+            title_card_enabled=True,
+            theme_preset=preset_warm,
+        )
+        self.assertTrue(mock_run.called)
+        cmd = mock_run.call_args[0][0]
+        fc_idx = cmd.index("-filter_complex")
+        fc_str = cmd[fc_idx + 1]
+
+        # Verify blend input order: [orig] must be first (input 0), [themed_bg] second (input 1)
+        self.assertIn("[orig][themed_bg]blend=all_expr=", fc_str)
+        self.assertNotIn("[themed_bg][orig]blend=", fc_str)
+
+        # Verify blend expression semantics:
+        # At start (T <= t_hold), output B (themed_bg)
+        # At resolve (T >= window), output A (orig)
+        # Bypass (t > window) passes input 0 unchanged -> orig (sharp)
+        self.assertRegex(fc_str, r"if\(lte\(T,[\d\.]+\),B,")
+        self.assertRegex(fc_str, r"if\(gte\(T,[\d\.]+\),A,")
+
+        # 2. Without graphic overlay
+        import dataclasses
+        preset_no_graphic = dataclasses.replace(preset_warm, graphic_overlay_type=None)
+        mock_run.reset_mock()
+        add_text_overlays_ffmpeg(
+            "dummy_video.mp4",
+            start_text="Teresa S. Dunn\n1st October 2025",
+            title_card_enabled=True,
+            theme_preset=preset_no_graphic,
+        )
+        self.assertTrue(mock_run.called)
+        cmd2 = mock_run.call_args[0][0]
+        fc_str2 = cmd2[cmd2.index("-filter_complex") + 1]
+
+        # Verify blend input order without graphic: [orig][blurred]
+        self.assertIn("[orig][blurred]blend=all_expr=", fc_str2)
+        self.assertNotIn("[blurred][orig]blend=", fc_str2)
+        self.assertRegex(fc_str2, r"if\(lte\(T,[\d\.]+\),B,")
+        self.assertRegex(fc_str2, r"if\(gte\(T,[\d\.]+\),A,")
+
 
 if __name__ == "__main__":
     unittest.main()
+
