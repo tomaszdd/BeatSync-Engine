@@ -202,16 +202,23 @@ encoding -- landscape rendered exactly as it did before this change (it never to
 
 ## Post-push Git proof
 
-`git push origin main` output:
+Implementation commit pushed first, then this report was updated in place with the real output
+below (which required a second small commit+push to record it -- final HEAD is `96d25c7`):
 
 ```text
 $ git push origin main
 To https://github.com/tomaszdd/BeatSync-Engine.git
    0e037e4..3be856f  main -> main
+   ... (implementation commit)
+
+$ git push origin main
+To https://github.com/tomaszdd/BeatSync-Engine.git
+   3be856f..96d25c7  main -> main
+   ... (this report's git-proof-section update)
 ```
 
-The following commands were run immediately after, for real, with their actual output pasted
-verbatim below (not predicted in advance):
+Real `git status`/`git log` output, run immediately after the final push above (not predicted in
+advance):
 
 ```text
 $ git status --short --branch
