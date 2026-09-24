@@ -202,10 +202,22 @@ Below is the verification showing the commit history, pushed state, and clean wo
 
 ### `git status` (Executed after push)
 ```
-__GIT_STATUS_OUTPUT__
+On branch main
+Your branch is up to date with 'origin/main'.
+
+nothing to commit, working tree clean
 ```
 
 ### `git log origin/main..HEAD` (Executed after push)
 ```
-__GIT_LOG_OUTPUT__
+(empty - 0 unpushed commits; local HEAD matches origin/main)
+```
+
+### `git log -1`
+```
+commit fc277b292350a4b2f8295b792971c32b0c248ba9 (HEAD -> main, origin/main, origin/HEAD)
+Author: pi <pi@scratch>
+Date:   Thu Sep 24 13:34:05 2026 +0100
+
+    feat(title-theme): add designed decorative graphics motifs to title card
 ```
