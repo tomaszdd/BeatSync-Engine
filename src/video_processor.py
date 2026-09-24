@@ -519,7 +519,12 @@ def create_clip_parallel(args):
     debug_callback = None
     in_handle = 0.0
     out_handle = 0.0
-    if len(args) >= 12:
+    vertical_crop_focus = "Auto (prefer smaller subject — baby/child)"
+    if len(args) >= 13:
+        (i, video_file, final_duration, target_size,
+         use_nvenc, gpu_encoder, temp_dir, fps, planned_clip, debug_callback,
+         in_handle, out_handle, vertical_crop_focus) = args[:13]
+    elif len(args) >= 12:
         (i, video_file, final_duration, target_size,
          use_nvenc, gpu_encoder, temp_dir, fps, planned_clip, debug_callback, in_handle, out_handle) = args[:12]
     elif len(args) >= 11:
@@ -580,14 +585,24 @@ def create_clip_parallel(args):
         if planned_clip and isinstance(planned_clip, dict):
             subject_bbox = planned_clip.get('subject_bbox')
 
-        if target_size and target_size[1] > target_size[0] and subject_bbox is None:
-            try:
-                from subject_detection import detect_subject_bbox_for_clip
-                subject_bbox = detect_subject_bbox_for_clip(video_file, clip_start, source_duration)
-                if planned_clip is not None and isinstance(planned_clip, dict) and subject_bbox is not None:
+        if target_size and target_size[1] > target_size[0]:
+            # Planner bboxes belong to Layer 1's legacy single-anchor scoring.
+            # Always replace them for vertical output so every focus policy is
+            # honored, including saved-plan re-renders and explicit center crop.
+            subject_bbox = None
+            if "center" not in vertical_crop_focus.lower():
+                try:
+                    from subject_detection import detect_subject_bbox_for_clip
+                    subject_bbox = detect_subject_bbox_for_clip(
+                        video_file, clip_start, source_duration, focus_mode=vertical_crop_focus
+                    )
+                except Exception:
+                    subject_bbox = None
+            if planned_clip is not None and isinstance(planned_clip, dict):
+                if subject_bbox is None:
+                    planned_clip.pop('subject_bbox', None)
+                else:
                     planned_clip['subject_bbox'] = subject_bbox
-            except Exception:
-                subject_bbox = None
 
         extract_kwargs = {
             'video_file': video_file,
@@ -991,6 +1006,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                       title_card_enabled: bool = False,
                       title_theme: str = 'Auto (AI mood match)',
                       export_orientation: str = 'Landscape (16:9)',
+                      vertical_crop_focus: str = 'Auto (prefer smaller subject — baby/child)',
                       ident_outro_enabled: bool = False,
                       ident_clip_path: str | None = None,
                       watermark_enabled: bool = False,
@@ -1112,6 +1128,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         "output_fps": float(fps),
         "target_resolution": f"{target_size[0]}x{target_size[1]}",
         "export_orientation": "vertical" if is_vertical else "landscape",
+        "vertical_crop_focus": vertical_crop_focus,
     })
     # Determine mode name
     mode_name = beat_info.get('mode', 'unknown') if beat_info else 'unknown'
@@ -1262,6 +1279,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                 'fps': float(fps),
                 'target_resolution': list(target_size),
                 'export_orientation': "vertical" if is_vertical else "landscape",
+                'vertical_crop_focus': vertical_crop_focus,
                 'audio_duration': float(audio_duration),
                 'title_theme': theme_preset.name,
                 'mood_signature': {
@@ -1451,7 +1469,8 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             video_file = planned_clip.get('video_file')
             clip_args.append((i, video_file, final_duration,
                             target_size, use_nvenc, gpu_encoder, session_temp_dir, fps,
-                            planned_clip, debug_callback, in_handles[i], out_handles[i]))
+                            planned_clip, debug_callback, in_handles[i], out_handles[i],
+                            vertical_crop_focus))
         
         clip_files = [None] * len(clip_args)
         clip_timings: List[float] = []

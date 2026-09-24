@@ -403,6 +403,18 @@ ORIENTATION_LANDSCAPE = "Landscape (16:9)"
 ORIENTATION_VERTICAL = "Vertical (9:16 — Instagram/Reels)"
 ORIENTATION_CHOICES = [ORIENTATION_LANDSCAPE, ORIENTATION_VERTICAL]
 
+LABEL_VERTICAL_CROP_FOCUS = "Vertical Crop Focus"
+INFO_VERTICAL_CROP_FOCUS = "Focus priority for vertical 9:16 crop. Prefer smaller subject prioritizes infants/children over adults; Largest subject centers on the largest person; Center crop uses geometric center."
+
+VERTICAL_CROP_AUTO_SMALLER = "Auto (prefer smaller subject — baby/child)"
+VERTICAL_CROP_AUTO_LARGEST = "Auto (largest subject)"
+VERTICAL_CROP_CENTER = "Center crop"
+VERTICAL_CROP_FOCUS_CHOICES = [
+    VERTICAL_CROP_AUTO_SMALLER,
+    VERTICAL_CROP_AUTO_LARGEST,
+    VERTICAL_CROP_CENTER,
+]
+
 LABEL_TITLE_THEME = "🎨 Title Theme"
 INFO_TITLE_THEME = "Local AI mood-matched typography, graphics, and wipes or choose a curated theme."
 

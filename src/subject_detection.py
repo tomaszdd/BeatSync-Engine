@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -105,23 +105,51 @@ def _letterbox(frame: np.ndarray, size: int) -> np.ndarray:
     return chw[None, ...]
 
 
-def detect_subject(
-    frame: np.ndarray,
-    min_confidence: float = CONFIDENCE_THRESHOLD,
-) -> Tuple[Optional[float], Optional[Tuple[float, float, float, float]]]:
-    """Detect primary subject in a BGR frame using YOLOv8n ONNX.
+def nms(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.45) -> List[int]:
+    """Non-maximum suppression for bounding boxes in normalized coordinates."""
+    if len(boxes) == 0:
+        return []
+    x0, y0, x1, y1 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+    areas = (x1 - x0) * (y1 - y0)
+    order = scores.argsort()[::-1]
+    keep = []
+    while order.size > 0:
+        i = int(order[0])
+        keep.append(i)
+        if order.size == 1:
+            break
+        xx0 = np.maximum(x0[i], x0[order[1:]])
+        yy0 = np.maximum(y0[i], y0[order[1:]])
+        xx1 = np.minimum(x1[i], x1[order[1:]])
+        yy1 = np.minimum(y1[i], y1[order[1:]])
+        w = np.maximum(0.0, xx1 - xx0)
+        h = np.maximum(0.0, yy1 - yy0)
+        inter = w * h
+        union = areas[i] + areas[order[1:]] - inter
+        iou = inter / np.maximum(union, 1e-6)
+        inds = np.where(iou <= iou_threshold)[0]
+        order = order[inds + 1]
+    return keep
 
-    Returns (confidence, bbox) where bbox is normalized (x0, y0, x1, y1) in [0..1].
-    Returns (None, None) if the model is unavailable or frame is invalid.
-    Returns (conf, None) if no subject meets min_confidence.
+
+def detect_subject_boxes(
+    frame: np.ndarray,
+    min_confidence: float = 0.05,
+    iou_threshold: float = 0.45,
+    only_person: bool = True,
+) -> List[Tuple[float, Tuple[float, float, float, float]]]:
+    """Detect person (or subject) bounding boxes in a BGR frame using YOLOv8n with NMS.
+
+    Returns a list of (confidence, (x0, y0, x1, y1)) sorted by confidence descending,
+    where coordinates are normalized to [0..1].
     """
     session = _load_session()
     if session is None or frame is None or getattr(frame, 'size', 0) == 0:
-        return None, None
+        return []
 
     h, w = frame.shape[:2]
     if h <= 0 or w <= 0:
-        return None, None
+        return []
 
     scale = INPUT_SIZE / max(h, w)
     nh, nw = max(1, int(round(h * scale))), max(1, int(round(w * scale)))
@@ -132,11 +160,148 @@ def detect_subject(
         outputs = session.run(None, {_input_name: input_tensor})
         pred = outputs[0][0]  # (4 + 80, num_anchors)
         class_scores = pred[4:, :]
+        person_scores = class_scores[0, :]
 
+        mask = person_scores >= min_confidence
+        anchors = np.where(mask)[0]
+
+        target_scores = person_scores
+        # If no person detected and not strictly only_person, check other subject classes
+        if len(anchors) == 0 and not only_person:
+            target_rows = sorted(_SUBJECT_CLASS_IDS.keys())
+            subject_scores = class_scores[target_rows, :]
+            if subject_scores.size:
+                max_pos = np.unravel_index(np.argmax(subject_scores), subject_scores.shape)
+                if float(subject_scores[max_pos]) >= min_confidence:
+                    row_idx = target_rows[max_pos[0]]
+                    target_scores = class_scores[row_idx, :]
+                    anchors = np.where(target_scores >= min_confidence)[0]
+
+        if len(anchors) == 0:
+            return []
+
+        boxes = []
+        scores = []
+        for idx in anchors:
+            s = float(target_scores[idx])
+            cx, cy, bw, bh = pred[:4, idx]
+            x0_c = cx - bw / 2.0
+            x1_c = cx + bw / 2.0
+            y0_c = cy - bh / 2.0
+            y1_c = cy + bh / 2.0
+            x0 = max(0.0, min(1.0, (x0_c - left) / float(nw)))
+            x1 = max(0.0, min(1.0, (x1_c - left) / float(nw)))
+            y0 = max(0.0, min(1.0, (y0_c - top) / float(nh)))
+            y1 = max(0.0, min(1.0, (y1_c - top) / float(nh)))
+            if x1 < x0:
+                x0, x1 = x1, x0
+            if y1 < y0:
+                y0, y1 = y1, y0
+
+            bw_ = x1 - x0
+            bh_ = y1 - y0
+            if bw_ >= 0.03 and bh_ >= 0.03:
+                ar = bh_ / bw_
+                if 0.20 <= ar <= 5.0:
+                    boxes.append([x0, y0, x1, y1])
+                    scores.append(s)
+
+        if not boxes:
+            return []
+
+        kept = nms(np.array(boxes), np.array(scores), iou_threshold=iou_threshold)
+        return [(float(scores[k]), (float(boxes[k][0]), float(boxes[k][1]), float(boxes[k][2]), float(boxes[k][3]))) for k in kept]
+
+    except Exception as e:
+        print(f"   Warning: subject detection inference failed: {e}")
+        return []
+
+
+def select_subject_bbox(
+    detections: Sequence[Tuple[float, Tuple[float, float, float, float]]],
+    focus_mode: str = "Auto (prefer smaller subject — baby/child)",
+    min_baby_area: float = 0.012,
+    max_baby_area: float = 0.35,
+) -> Optional[Tuple[float, float, float, float]]:
+    """Select the best subject bounding box given multi-person detections and focus mode.
+
+    focus_mode options:
+      - 'Auto (prefer smaller subject — baby/child)': prioritizes infants/children (default)
+      - 'Auto (largest subject)': prioritizes largest person (legacy behavior)
+      - 'Center crop': returns None (geometric center crop)
+    """
+    if not detections:
+        return None
+
+    if "center" in focus_mode.lower():
+        return None
+
+    if "largest" in focus_mode.lower():
+        # Largest subject by area; tie-break by confidence
+        best = max(detections, key=lambda d: ((d[1][2] - d[1][0]) * (d[1][3] - d[1][1]), d[0]))
+        return best[1]
+
+    # Baby-priority selection heuristic
+    # Filter out edge artifacts (truncated thin boxes at extreme borders)
+    valid_cands = []
+    for conf, bbox in detections:
+        bw = bbox[2] - bbox[0]
+        bh = bbox[3] - bbox[1]
+        area = bw * bh
+        is_edge_sliver = (bbox[0] < 0.005 or bbox[2] > 0.995) and bw < 0.12
+        if area >= min_baby_area and not is_edge_sliver:
+            valid_cands.append((conf, bbox, area))
+
+    if not valid_cands:
+        # Fall back to highest confidence detection
+        return detections[0][1]
+
+    if len(valid_cands) == 1:
+        return valid_cands[0][1]
+
+    # Multiple candidates: check for baby/child-sized candidates
+    baby_cands = [c for c in valid_cands if c[2] <= max_baby_area]
+    if baby_cands:
+        # Among baby-sized candidates, prefer ones positioned plausibly in frame (y1 > 0.30)
+        plausible_babies = [c for c in baby_cands if c[1][3] > 0.30]
+        candidates_to_rank = plausible_babies if plausible_babies else baby_cands
+        # Prefer the smallest area candidate in the baby range
+        best_baby = min(candidates_to_rank, key=lambda c: c[2])
+        return best_baby[1]
+
+    # If all candidates exceed max_baby_area (all adults), pick the smallest among them
+    best = min(valid_cands, key=lambda c: c[2])
+    return best[1]
+
+
+def detect_subject(
+    frame: np.ndarray,
+    min_confidence: float = CONFIDENCE_THRESHOLD,
+) -> Tuple[Optional[float], Optional[Tuple[float, float, float, float]]]:
+    """Detect the legacy primary subject used by the Layer 1 quality filter.
+
+    Preserves backward compatibility with Layer 1 quality filter / subject scoring.
+    Returns (confidence, bbox) where bbox is normalized (x0, y0, x1, y1) in [0..1].
+    Returns (None, None) if the model is unavailable or frame is invalid.
+    Returns (conf, None) if no subject meets min_confidence.
+    """
+    session = _load_session()
+    if session is None or frame is None or getattr(frame, 'size', 0) == 0:
+        return None, None
+    h, w = frame.shape[:2]
+    if h <= 0 or w <= 0:
+        return None, None
+
+    scale = INPUT_SIZE / max(h, w)
+    nh, nw = max(1, int(round(h * scale))), max(1, int(round(w * scale)))
+    top, left = (INPUT_SIZE - nh) // 2, (INPUT_SIZE - nw) // 2
+
+    try:
+        pred = session.run(None, {_input_name: _letterbox(frame, INPUT_SIZE)})[0][0]
+        class_scores = pred[4:, :]
         target_rows = sorted(_SUBJECT_CLASS_IDS.keys())
         person_scores = class_scores[0, :]
         max_person_score = float(person_scores.max()) if person_scores.size else 0.0
-
         if max_person_score >= min_confidence:
             best_score = max_person_score
             anchor_idx = int(np.argmax(person_scores))
@@ -147,30 +312,18 @@ def detect_subject(
             max_pos = np.unravel_index(np.argmax(subject_scores), subject_scores.shape)
             best_score = float(subject_scores[max_pos])
             anchor_idx = int(max_pos[1])
-
         if best_score < min_confidence:
             return float(max(0.0, best_score)), None
 
-        # Box coordinates on the INPUT_SIZE x INPUT_SIZE canvas
         cx, cy, bw, bh = pred[:4, anchor_idx]
-        x0_c = cx - bw / 2.0
-        x1_c = cx + bw / 2.0
-        y0_c = cy - bh / 2.0
-        y1_c = cy + bh / 2.0
-
-        # Map from canvas back to original frame (un-letterbox)
-        x0_norm = max(0.0, min(1.0, (x0_c - left) / float(nw)))
-        x1_norm = max(0.0, min(1.0, (x1_c - left) / float(nw)))
-        y0_norm = max(0.0, min(1.0, (y0_c - top) / float(nh)))
-        y1_norm = max(0.0, min(1.0, (y1_c - top) / float(nh)))
-
-        if x1_norm < x0_norm:
-            x0_norm, x1_norm = x1_norm, x0_norm
-        if y1_norm < y0_norm:
-            y0_norm, y1_norm = y1_norm, y0_norm
-
-        return float(max(0.0, min(1.0, best_score))), (float(x0_norm), float(y0_norm), float(x1_norm), float(y1_norm))
-
+        x0 = max(0.0, min(1.0, (cx - bw / 2.0 - left) / float(nw)))
+        x1 = max(0.0, min(1.0, (cx + bw / 2.0 - left) / float(nw)))
+        y0 = max(0.0, min(1.0, (cy - bh / 2.0 - top) / float(nh)))
+        y1 = max(0.0, min(1.0, (cy + bh / 2.0 - top) / float(nh)))
+        return float(max(0.0, min(1.0, best_score))), (
+            float(min(x0, x1)), float(min(y0, y1)),
+            float(max(x0, x1)), float(max(y0, y1)),
+        )
     except Exception as e:
         print(f"   Warning: subject detection inference failed: {e}")
         return None, None
@@ -180,7 +333,7 @@ def detect_subject_bbox(
     frame: np.ndarray,
     min_confidence: float = 0.20,
 ) -> Optional[Tuple[float, float, float, float]]:
-    """Convenience helper returning normalized (x0, y0, x1, y1) bbox or None."""
+    """Legacy convenience helper retained for Layer 1 compatibility."""
     _, bbox = detect_subject(frame, min_confidence=min_confidence)
     return bbox
 
@@ -248,16 +401,23 @@ def detect_subject_bbox_for_clip(
     video_file: str,
     start_time: float,
     duration: float,
-    min_confidence: float = 0.20,
+    min_confidence: float = 0.05,
+    focus_mode: str = "Auto (prefer smaller subject — baby/child)",
 ) -> Optional[Tuple[float, float, float, float]]:
     """Detect subject bbox for a video clip by sampling a frame from the clip window."""
+    if "center" in focus_mode.lower():
+        return None
     sample_time = start_time + min(max(0.1, duration), 2.0) * 0.5
     frame = sample_frame_from_video(video_file, sample_time)
     if frame is None and start_time > 0:
         frame = sample_frame_from_video(video_file, start_time)
     if frame is None:
         return None
-    return detect_subject_bbox(frame, min_confidence=min_confidence)
+    dets = detect_subject_boxes(frame, min_confidence=min_confidence, only_person=True)
+    if not dets:
+        dets = detect_subject_boxes(frame, min_confidence=min_confidence, only_person=False)
+    return select_subject_bbox(dets, focus_mode=focus_mode)
+
 
 
 def score_frame_darkness(frames: Sequence[np.ndarray]) -> Dict[str, float]:
