@@ -390,6 +390,12 @@ INFO_TRANSITIONS_ENABLED = "Smooth crossfades on weaker beats, keeping punchy ha
 LABEL_TITLE_CARD_ENABLED = "✨ Blur-to-sharp title card"
 INFO_TITLE_CARD_ENABLED = "Opening title card: footage starts blurred and dimmed under title text, then smoothly resolves to sharp video."
 
+LABEL_IDENT_OUTRO_ENABLED = "🎬 Add Ident Outro"
+INFO_IDENT_OUTRO_ENABLED = "Append Tomasz's 3D logo ident clip to the end of the video with full audio."
+
+LABEL_WATERMARK_ENABLED = "🏷️ Add Watermark"
+INFO_WATERMARK_ENABLED = "Overlay a persistent, semi-transparent logo mark in the bottom-right corner during the main video."
+
 LABEL_EXPORT_ORIENTATION = "Export Orientation"
 INFO_EXPORT_ORIENTATION = "Landscape (16:9) preserves native source framing. Vertical (9:16) smart-crops to 1080x1920 centered on detected subjects for Instagram/Reels."
 

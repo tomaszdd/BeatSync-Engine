@@ -44,6 +44,26 @@ from logger import (
 )
 from gpu_cpu_utils import MAX_THREADS
 
+try:
+    from paths import (
+        DEFAULT_IDENT_ASSET_PATH,
+        DEFAULT_WATERMARK_ASSET_PATH,
+        get_ident_asset_path,
+        get_watermark_asset_path,
+    )
+except ImportError:
+    DEFAULT_IDENT_ASSET_PATH = os.environ.get(
+        'BEATSYNC_IDENT_ASSET_PATH',
+        r'D:\BeatSync-Assets\TDD_Intro_3D_1.mov'
+    )
+    DEFAULT_WATERMARK_ASSET_PATH = os.path.join(
+        os.path.dirname(current_dir), 'assets', 'tdd_watermark.png'
+    )
+    def get_ident_asset_path() -> str:
+        return DEFAULT_IDENT_ASSET_PATH
+    def get_watermark_asset_path() -> str:
+        return DEFAULT_WATERMARK_ASSET_PATH
+
 # Initialize environment
 setup_environment()
 
@@ -474,6 +494,178 @@ def _title_font_size(text: str, frame_w: int, frame_h: int) -> int:
     return int(max(16, round(size)))
 
 
+def compute_watermark_layout(
+    frame_w: int,
+    frame_h: int,
+    wm_w_raw: int,
+    wm_h_raw: int,
+    position: str = 'bottom_right',
+) -> Tuple[int, int, int, int]:
+    """Calculate scaled watermark dimensions and (x, y) coordinates.
+
+    Spec requirements:
+    - ~8-10% of frame width (8.5% in landscape, 10% in vertical 9:16).
+    - Aspect ratio preserved.
+    - Default position bottom-right with ~2% padding from edge.
+    - All dimensions rounded to even integers for clean video alignment.
+    """
+    is_vertical = frame_h > frame_w
+    if is_vertical:
+        width_ratio = 0.10
+        pad_x_ratio = 0.025
+        pad_y_ratio = 0.025
+    else:
+        width_ratio = 0.085
+        pad_x_ratio = 0.020
+        pad_y_ratio = 0.020
+
+    raw_aspect = float(wm_h_raw) / float(max(1, wm_w_raw))
+    target_w = max(32, int(round(frame_w * width_ratio)))
+    if target_w % 2 != 0:
+        target_w += 1
+
+    target_h = max(24, int(round(target_w * raw_aspect)))
+    if target_h % 2 != 0:
+        target_h += 1
+
+    pad_x = max(16, int(round(frame_w * pad_x_ratio)))
+    if pad_x % 2 != 0:
+        pad_x += 1
+    pad_y = max(16, int(round(frame_h * pad_y_ratio)))
+    if pad_y % 2 != 0:
+        pad_y += 1
+
+    pos = str(position or 'bottom_right').lower()
+    if pos == 'top_left':
+        x = pad_x
+        y = pad_y
+    elif pos == 'top_right':
+        x = frame_w - target_w - pad_x
+        y = pad_y
+    elif pos == 'bottom_left':
+        x = pad_x
+        y = frame_h - target_h - pad_y
+    elif pos == 'top_center':
+        x = (frame_w - target_w) // 2
+        y = pad_y
+    elif pos == 'bottom_center':
+        x = (frame_w - target_w) // 2
+        y = frame_h - target_h - pad_y
+    else:  # default bottom_right
+        x = frame_w - target_w - pad_x
+        y = frame_h - target_h - pad_y
+
+    x = max(0, min(frame_w - target_w, x))
+    y = max(0, min(frame_h - target_h, y))
+    if x % 2 != 0:
+        x -= 1
+    if y % 2 != 0:
+        y -= 1
+
+    return target_w, target_h, x, y
+
+
+def extract_or_get_watermark(
+    ident_clip_path: str | None = None,
+    output_png_path: str | None = None,
+    timestamp: float = 3.8,
+) -> str:
+    """Ensure a high-quality watermark PNG exists and return its path.
+
+    If output_png_path or DEFAULT_WATERMARK_ASSET_PATH already exists, returns it.
+    Otherwise, extracts a single representative frame from ident_clip_path at
+    timestamp (near the end of the 6s animation where the 3D logo is fully resolved),
+    crops to the logo bounding box, removes the bright gradient background via
+    alpha matting, adds a subtle white rim glow for contrast against dark scenes,
+    and saves to PNG.
+    """
+    target_path = output_png_path or DEFAULT_WATERMARK_ASSET_PATH
+    if os.path.isfile(target_path) and os.path.getsize(target_path) > 0:
+        return target_path
+
+    ident_path = ident_clip_path or DEFAULT_IDENT_ASSET_PATH
+    if not os.path.isfile(ident_path):
+        raise FileNotFoundError(
+            f"Cannot extract watermark: ident asset not found at {ident_path}"
+        )
+
+    os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
+    temp_frame = target_path + f".raw_{uuid.uuid4().hex}.png"
+    try:
+        extract_cmd = [
+            FFMPEG_PATH, '-y', '-nostdin', '-hide_banner',
+            '-ss', f"{timestamp:.2f}",
+            '-i', ident_path,
+            '-vframes', '1',
+            temp_frame
+        ]
+        res = _run_media_command(extract_cmd, timeout=30)
+        if res.returncode != 0 or not os.path.isfile(temp_frame):
+            raise RuntimeError(f"Failed to extract frame from ident clip: {res.stderr}")
+
+        from PIL import Image, ImageFilter
+        import numpy as np
+        from collections import deque
+
+        im = Image.open(temp_frame).convert('RGB')
+        arr = np.array(im)
+
+        sub = arr[200:900, 400:1500]
+        is_dark = np.mean(sub, axis=2) < 185
+        ys, xs = np.where(is_dark)
+        if len(xs) > 0 and len(ys) > 0:
+            ymin, ymax = 200 + ys.min(), 200 + ys.max()
+            xmin, xmax = 400 + xs.min(), 400 + xs.max()
+            pad = 20
+            ymin = max(0, ymin - pad)
+            ymax = min(arr.shape[0], ymax + pad)
+            xmin = max(0, xmin - pad)
+            xmax = min(arr.shape[1], xmax + pad)
+            crop = im.crop((xmin, ymin, xmax, ymax))
+        else:
+            crop = im
+
+        crop_arr = np.array(crop)
+        ch, cw, _ = crop_arr.shape
+
+        tl = crop_arr[0, 0].astype(float)
+        is_bg = np.all(crop_arr > 185, axis=2) | (np.linalg.norm(crop_arr.astype(float) - tl, axis=2) < 45)
+
+        visited = np.zeros((ch, cw), dtype=bool)
+        queue = deque()
+        for x in range(cw):
+            if is_bg[0, x]: queue.append((0, x)); visited[0, x] = True
+            if is_bg[ch-1, x]: queue.append((ch-1, x)); visited[ch-1, x] = True
+        for y in range(ch):
+            if is_bg[y, 0]: queue.append((y, 0)); visited[y, 0] = True
+            if is_bg[y, cw-1]: queue.append((y, cw-1)); visited[y, cw-1] = True
+
+        while queue:
+            y, x = queue.popleft()
+            for dy, dx in [(-1,0), (1,0), (0,-1), (0,1)]:
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < ch and 0 <= nx < cw and not visited[ny, nx] and is_bg[ny, nx]:
+                    visited[ny, nx] = True
+                    queue.append((ny, nx))
+
+        alpha = np.full((ch, cw), 255, dtype=np.uint8)
+        alpha[visited] = 0
+
+        rgba = np.dstack([crop_arr, alpha])
+        wm_img = Image.fromarray(rgba, 'RGBA')
+
+        a_mask = Image.fromarray(alpha, 'L')
+        outline_mask = a_mask.filter(ImageFilter.MaxFilter(9)).filter(ImageFilter.GaussianBlur(3))
+        glow = Image.new('RGBA', wm_img.size, (255, 255, 255, 0))
+        glow.putalpha(outline_mask)
+
+        final_wm = Image.alpha_composite(glow, wm_img)
+        final_wm.save(target_path)
+        return target_path
+    finally:
+        _safe_remove_file(temp_frame)
+
+
 def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
                               start_position: str = 'bottom_center', start_duration: float = 3.0,
                               end_text: str = '', end_position: str = 'bottom_center',
@@ -483,20 +675,26 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
                               fade_in: float = 0.0, fade_out: float = 0.0,
                               title_card_enabled: bool = False,
                               title_theme: str | None = None,
-                              theme_preset: Optional[Any] = None) -> str:
-    """Burn optional start/end titles and/or a black fade in/out into an assembled video.
+                              theme_preset: Optional[Any] = None,
+                              watermark_enabled: bool = False,
+                              watermark_image: str | None = None,
+                              watermark_position: str = 'bottom_right',
+                              watermark_opacity: float = 0.60) -> str:
+    """Burn optional start/end titles, watermark, and/or a black fade in/out into an assembled video.
 
     If title_card_enabled is True and start_text is non-empty, applies a blur-to-sharp
     title card opening that smoothly resolves into the sharp first clip footage,
     using the chosen visual theme (typography, color grade, and graphic overlay).
     Otherwise, burns standard text overlay(s).
+    If watermark_enabled is True, composites a persistent semi-transparent watermark logo mark
+    in the chosen corner (default bottom-right) across the main video.
     """
     start_clean = str(start_text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
     end_clean = str(end_text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
     have_text = bool(start_clean or end_clean)
     fade_in = max(0.0, float(fade_in or 0.0))
     fade_out = max(0.0, float(fade_out or 0.0))
-    if not have_text and fade_in <= 0.0 and fade_out <= 0.0:
+    if not have_text and fade_in <= 0.0 and fade_out <= 0.0 and not watermark_enabled:
         return output_file
 
     if theme_preset is None and (title_theme or title_card_enabled) and resolve_theme:
@@ -513,6 +711,32 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
     font_arg = _escape_drawtext_fontfile(font_file)
     text_base = os.path.splitext(output_file)[0]
     temp_text_files: list[str] = []
+
+    wm_png_path = None
+    target_w, target_h, wm_x, wm_y = 0, 0, 0, 0
+    if watermark_enabled:
+        candidate_wm = watermark_image or get_watermark_asset_path()
+        if os.path.isfile(candidate_wm) and os.path.getsize(candidate_wm) > 0:
+            wm_png_path = candidate_wm
+        else:
+            try:
+                wm_png_path = extract_or_get_watermark(output_png_path=candidate_wm)
+            except Exception as e:
+                print(f"   ⚠️ Could not load/extract watermark: {e}")
+                wm_png_path = None
+
+        if wm_png_path and os.path.isfile(wm_png_path):
+            try:
+                from PIL import Image
+                with Image.open(wm_png_path) as im:
+                    wm_w_raw, wm_h_raw = im.size
+            except Exception:
+                wm_w_raw, wm_h_raw = 889, 676
+            target_w, target_h, wm_x, wm_y = compute_watermark_layout(
+                frame_w, frame_h, wm_w_raw, wm_h_raw, position=watermark_position
+            )
+        else:
+            watermark_enabled = False
 
     use_title_card = bool(title_card_enabled and start_clean)
 
@@ -737,6 +961,17 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
         else:
             fc_parts.append(f"[v_text]null[v_title]")
 
+        current_v = "v_title"
+        if watermark_enabled and wm_png_path:
+            wm_idx = 2 if motif_png_path else 1
+            fc_parts.append(
+                f"[{wm_idx}:v]scale={target_w}:{target_h},format=rgba,colorchannelmixer=aa={watermark_opacity:.2f}[wm_mark]"
+            )
+            fc_parts.append(
+                f"[{current_v}][wm_mark]overlay=x={wm_x}:y={wm_y}:shortest=1[v_wm]"
+            )
+            current_v = "v_wm"
+
         post_filters = []
         if fade_in > 0.0:
             post_filters.append(f"fade=t=in:st=0:d={fade_in:.3f}:color=black")
@@ -749,13 +984,13 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
             post_filters.append(f"fade=t=out:st={fade_out_start:.3f}:d={fade_out:.3f}:color=black")
 
         if post_filters:
-            fc_parts.append(f"[v_title]{','.join(post_filters)}[v_out]")
+            fc_parts.append(f"[{current_v}]{','.join(post_filters)}[v_out]")
         else:
-            fc_parts.append(f"[v_title]null[v_out]")
+            fc_parts.append(f"[{current_v}]null[v_out]")
 
         filter_complex_str = "; ".join(fc_parts)
         is_complex = True
-        desc = "blur-to-sharp title card"
+        desc = "blur-to-sharp title card" + (" + watermark" if watermark_enabled else "")
     else:
         # Standard overlay branch
         overlays = []
@@ -767,18 +1002,53 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
                                    max(0.0, video_duration - fade_out))
             overlays.append(_make_text_filter(end_clean, end_position, end_visible_from, video_duration))
 
-        video_filters = list(overlays)
-        if fade_in > 0.0:
-            video_filters.append(f"fade=t=in:st=0:d={fade_in:.3f}:color=black")
-        if fade_out > 0.0:
-            fade_out_start = max(0.0, video_duration - fade_out)
-            video_filters.append(f"fade=t=out:st={fade_out_start:.3f}:d={fade_out:.3f}:color=black")
+        if watermark_enabled and wm_png_path:
+            is_complex = True
+            fc_parts = []
+            if overlays:
+                fc_parts.append(f"[0:v]{','.join(overlays)}[v_txt]")
+            else:
+                fc_parts.append("[0:v]null[v_txt]")
 
-        if not video_filters:
-            return output_file
+            fc_parts.append(
+                f"[1:v]scale={target_w}:{target_h},format=rgba,colorchannelmixer=aa={watermark_opacity:.2f}[wm_mark]"
+            )
+            fc_parts.append(
+                f"[v_txt][wm_mark]overlay=x={wm_x}:y={wm_y}:shortest=1[v_wm]"
+            )
+            current_v = "v_wm"
 
-        is_complex = False
-        desc = f"{len(overlays)} text overlay(s)"
+            post_filters = []
+            if fade_in > 0.0:
+                post_filters.append(f"fade=t=in:st=0:d={fade_in:.3f}:color=black")
+            if fade_out > 0.0:
+                fade_out_start = max(0.0, video_duration - fade_out)
+                post_filters.append(f"fade=t=out:st={fade_out_start:.3f}:d={fade_out:.3f}:color=black")
+
+            if post_filters:
+                fc_parts.append(f"[{current_v}]{','.join(post_filters)}[v_out]")
+            else:
+                fc_parts.append(f"[{current_v}]null[v_out]")
+
+            filter_complex_str = "; ".join(fc_parts)
+            desc_parts = []
+            if overlays:
+                desc_parts.append(f"{len(overlays)} text overlay(s)")
+            desc_parts.append("watermark")
+            desc = " + ".join(desc_parts)
+        else:
+            video_filters = list(overlays)
+            if fade_in > 0.0:
+                video_filters.append(f"fade=t=in:st=0:d={fade_in:.3f}:color=black")
+            if fade_out > 0.0:
+                fade_out_start = max(0.0, video_duration - fade_out)
+                video_filters.append(f"fade=t=out:st={fade_out_start:.3f}:d={fade_out:.3f}:color=black")
+
+            if not video_filters:
+                return output_file
+
+            is_complex = False
+            desc = f"{len(overlays)} text overlay(s)"
 
     base, extension = os.path.splitext(output_file)
     temp_output = f"{base}_text_overlay_{uuid.uuid4().hex}{extension}"
@@ -789,6 +1059,8 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
     cmd = [FFMPEG_PATH, '-nostdin', '-hide_banner', '-i', output_file]
     if is_complex and motif_png_path:
         cmd.extend(['-loop', '1', '-t', f"{window:.3f}", '-i', motif_png_path])
+    if is_complex and watermark_enabled and wm_png_path:
+        cmd.extend(['-loop', '1', '-i', wm_png_path])
     if is_complex:
         cmd.extend(['-filter_complex', filter_complex_str, '-map', '[v_out]', '-map', '0:a?'])
     else:
@@ -820,6 +1092,171 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
         _safe_remove_file(temp_output)
         for tf in temp_text_files:
             _safe_remove_file(tf)
+
+
+def get_audio_codec_and_rate(file_path: str) -> Tuple[str, int, int]:
+    """Return (codec_name, sample_rate, channels) for file_path's primary audio stream."""
+    try:
+        cmd = [
+            FFPROBE_PATH, '-v', 'error',
+            '-select_streams', 'a:0',
+            '-show_entries', 'stream=codec_name,sample_rate,channels',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            file_path
+        ]
+        res = _run_media_command(cmd, timeout=10)
+        lines = [line.strip() for line in res.stdout.strip().splitlines() if line.strip()]
+        if len(lines) >= 3:
+            return lines[0], int(lines[1]), int(lines[2])
+    except Exception:
+        pass
+    return ('aac', 48000, 2)
+
+
+def append_ident_outro(
+    main_video_file: str,
+    ident_clip_path: str | None = None,
+    use_nvenc: bool = False,
+    gpu_encoder: str = 'h264_nvenc',
+    fps: float = 30.0,
+    temp_dir: str | None = None,
+) -> str:
+    """Scale, re-encode, and append the 3D ident outro clip to the end of main_video_file.
+
+    Scales/letterboxes the ident clip to match the main video's resolution (landscape 4K/1080p
+    or vertical 9:16) using build_fit_scale_filter(), re-encodes video matching the main render's
+    encoder (AMF/NVENC/CPU/ProRes) and FPS, preserves unmuted stereo audio (matching main audio
+    sample format and rate), concatenates via fast stream-copy demuxer (falling back to
+    filter-complex concat if needed), and atomically replaces main_video_file.
+    """
+    ident_path = ident_clip_path or get_ident_asset_path()
+    if not os.path.isfile(ident_path):
+        print(f"   ⚠️ Ident outro clip not found at {ident_path}; skipping outro append.")
+        return main_video_file
+
+    frame_w, frame_h = get_video_resolution(main_video_file)
+    main_fps = get_video_fps(main_video_file) or fps
+    is_prores = main_video_file.lower().endswith('.mov')
+
+    audio_codec, sample_rate, channels = get_audio_codec_and_rate(main_video_file)
+
+    work_dir = temp_dir or os.path.dirname(os.path.abspath(main_video_file))
+    base_name = os.path.splitext(os.path.basename(main_video_file))[0]
+    ext = os.path.splitext(main_video_file)[1] or ('.mov' if is_prores else '.mp4')
+
+    transcoded_outro = os.path.join(work_dir, f"{base_name}_ident_transcoded_{uuid.uuid4().hex}{ext}")
+    concat_list_file = os.path.join(work_dir, f"{base_name}_concat_list_{uuid.uuid4().hex}.txt")
+    temp_merged_file = os.path.join(work_dir, f"{base_name}_with_ident_{uuid.uuid4().hex}{ext}")
+
+    print(f"   🎬 Transcoding ident outro clip to match {frame_w}x{frame_h} @ {main_fps:.2f}fps ({'ProRes' if is_prores else gpu_encoder}, audio: {audio_codec})...")
+    scale_filter = build_fit_scale_filter(frame_w, frame_h)
+
+    # 1. Transcode the ident clip
+    transcode_cmd = [
+        FFMPEG_PATH, '-y', '-nostdin', '-hide_banner',
+        '-i', ident_path,
+        '-vf', scale_filter,
+    ]
+
+    # Video encoding args
+    if is_prores:
+        transcode_cmd.extend(['-c:v', 'prores', '-profile:v', '0', '-vendor', 'apl0', '-pix_fmt', 'yuv422p10le'])
+    elif use_nvenc:
+        if gpu_encoder in ('h264_nvenc', 'hevc_nvenc'):
+            transcode_cmd.extend(get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
+        elif gpu_encoder in ('h264_amf', 'hevc_amf'):
+            transcode_cmd.extend(get_amf_quality_args(gpu_encoder, include_pix_fmt=True))
+        else:
+            transcode_cmd.extend(['-c:v', gpu_encoder, '-pix_fmt', 'yuv420p'])
+    else:
+        transcode_cmd.extend(get_cpu_h264_quality_args(include_pix_fmt=True))
+
+    # Audio encoding args: match the main video's audio codec & sample rate
+    if is_prores:
+        transcode_cmd.extend(['-c:a', 'pcm_s16le', '-ar', str(sample_rate), '-ac', str(channels)])
+    elif audio_codec == 'pcm_s24le':
+        transcode_cmd.extend(['-c:a', 'pcm_s24le', '-ar', str(sample_rate), '-ac', str(channels)])
+    elif audio_codec == 'pcm_s16le':
+        transcode_cmd.extend(['-c:a', 'pcm_s16le', '-ar', str(sample_rate), '-ac', str(channels)])
+    else:
+        transcode_cmd.extend(['-c:a', 'aac', '-b:a', '320k', '-ar', str(sample_rate), '-ac', str(channels)])
+
+    transcode_cmd.extend([
+        '-fps_mode', 'cfr', '-r', str(main_fps),
+        '-movflags', '+faststart',
+        transcoded_outro
+    ])
+
+    try:
+        t_start = time.perf_counter()
+        res = _run_media_command(transcode_cmd, timeout=180)
+        if res.returncode != 0 or not os.path.isfile(transcoded_outro):
+            raise RuntimeError(f"Failed to transcode ident outro: {_short_ffmpeg_error(res.stderr)}")
+        print(f"   ✓ Ident outro transcoded in {_fmt_seconds(time.perf_counter() - t_start)}")
+
+        # 2. Concat via fast stream-copy demuxer
+        with open(concat_list_file, 'w', encoding='utf-8') as f:
+            m_path = os.path.abspath(main_video_file).replace("'", "'\\''")
+            i_path = os.path.abspath(transcoded_outro).replace("'", "'\\''")
+            f.write(f"file '{m_path}'\n")
+            f.write(f"file '{i_path}'\n")
+
+        print(f"   🔗 Appending ident outro to main video...")
+        concat_cmd = [
+            FFMPEG_PATH, '-y', '-nostdin', '-hide_banner',
+            '-f', 'concat', '-safe', '0',
+            '-i', concat_list_file,
+            '-c', 'copy',
+            '-fflags', '+genpts',
+            '-movflags', '+faststart',
+            temp_merged_file
+        ]
+        c_res = _run_media_command(concat_cmd, timeout=120)
+        if c_res.returncode == 0 and os.path.isfile(temp_merged_file) and os.path.getsize(temp_merged_file) > 0:
+            os.replace(temp_merged_file, main_video_file)
+            print(f"   ✓ Ident outro successfully appended to {main_video_file}")
+            return main_video_file
+
+        # Fallback to filter-complex concat if stream-copy was rejected
+        print(f"   ⚠️ Concat stream-copy failed ({_short_ffmpeg_error(c_res.stderr)}); falling back to filter concat...")
+        fallback_cmd = [
+            FFMPEG_PATH, '-y', '-nostdin', '-hide_banner',
+            '-i', main_video_file,
+            '-i', transcoded_outro,
+            '-filter_complex', '[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[v][a]',
+            '-map', '[v]', '-map', '[a]',
+        ]
+        if is_prores:
+            fallback_cmd.extend(['-c:v', 'prores', '-profile:v', '0', '-vendor', 'apl0', '-pix_fmt', 'yuv422p10le'])
+            fallback_cmd.extend(['-c:a', 'pcm_s16le', '-ar', str(sample_rate), '-ac', str(channels)])
+        elif use_nvenc:
+            if gpu_encoder in ('h264_nvenc', 'hevc_nvenc'):
+                fallback_cmd.extend(get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
+            elif gpu_encoder in ('h264_amf', 'hevc_amf'):
+                fallback_cmd.extend(get_amf_quality_args(gpu_encoder, include_pix_fmt=True))
+            else:
+                fallback_cmd.extend(['-c:v', gpu_encoder, '-pix_fmt', 'yuv420p'])
+            fallback_cmd.extend(['-c:a', 'aac', '-b:a', '320k', '-ar', str(sample_rate), '-ac', str(channels)])
+        else:
+            fallback_cmd.extend(get_cpu_h264_quality_args(include_pix_fmt=True))
+            fallback_cmd.extend(['-c:a', 'aac', '-b:a', '320k', '-ar', str(sample_rate), '-ac', str(channels)])
+
+        fallback_cmd.extend([
+            '-fps_mode', 'cfr', '-r', str(main_fps),
+            '-movflags', '+faststart',
+            temp_merged_file
+        ])
+        fb_res = _run_media_command(fallback_cmd, timeout=300)
+        if fb_res.returncode != 0 or not os.path.isfile(temp_merged_file):
+            raise RuntimeError(f"Ident outro concat fallback failed: {_short_ffmpeg_error(fb_res.stderr)}")
+
+        os.replace(temp_merged_file, main_video_file)
+        print(f"   ✓ Ident outro appended via filter concat to {main_video_file}")
+        return main_video_file
+    finally:
+        _safe_remove_file(transcoded_outro)
+        _safe_remove_file(concat_list_file)
+        _safe_remove_file(temp_merged_file)
 
 
 def convert_to_prores_proxy(video_file: str, output_dir: str, fps: float = None) -> str:

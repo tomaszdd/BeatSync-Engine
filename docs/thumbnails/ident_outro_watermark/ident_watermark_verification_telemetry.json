@@ -1,0 +1,87 @@
+{
+  "run_a": {
+    "description": "Ident Outro Only",
+    "output_file": "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\output\\ident_watermark_verify\\verify_run_a_outro_only.mp4",
+    "render_time_s": 13.56,
+    "video_width": 3840,
+    "video_height": 2160,
+    "video_packets": 480,
+    "video_duration_s": 16.0,
+    "format_duration_s": 16.006,
+    "video_encoder": "Lavc63.1.102 h264_amf",
+    "audio_codec": "pcm_s24le",
+    "audio_duration_s": 16.006,
+    "thumbnails": [
+      "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\docs\\thumbnails\\ident_outro_watermark\\run_a_main_t5.0s.jpg",
+      "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\docs\\thumbnails\\ident_outro_watermark\\run_a_outro_t13.0s.jpg"
+    ]
+  },
+  "run_b": {
+    "description": "Watermark Only",
+    "output_file": "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\output\\ident_watermark_verify\\verify_run_b_watermark_only.mp4",
+    "render_time_s": 14.53,
+    "video_width": 3840,
+    "video_height": 2160,
+    "video_packets": 300,
+    "video_duration_s": 10.0,
+    "format_duration_s": 10.0,
+    "video_encoder": "Lavc63.1.102 h264_amf",
+    "audio_codec": "pcm_s24le",
+    "audio_duration_s": 10.0,
+    "thumbnails": [
+      "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\docs\\thumbnails\\ident_outro_watermark\\run_b_watermark_t2.0s.jpg",
+      "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\docs\\thumbnails\\ident_outro_watermark\\run_b_watermark_t5.0s.jpg",
+      "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\docs\\thumbnails\\ident_outro_watermark\\run_b_watermark_t8.0s.jpg"
+    ]
+  },
+  "run_c": {
+    "description": "Both Outro and Watermark",
+    "output_file": "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\output\\ident_watermark_verify\\verify_run_c_both.mp4",
+    "render_time_s": 17.09,
+    "video_width": 3840,
+    "video_height": 2160,
+    "video_packets": 480,
+    "video_duration_s": 16.0,
+    "format_duration_s": 16.006,
+    "video_encoder": "Lavc63.1.102 h264_amf",
+    "audio_codec": "pcm_s24le",
+    "audio_duration_s": 16.006,
+    "thumbnails": [
+      "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\docs\\thumbnails\\ident_outro_watermark\\run_c_both_main_t5.0s.jpg",
+      "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\docs\\thumbnails\\ident_outro_watermark\\run_c_both_outro_t13.0s.jpg"
+    ]
+  },
+  "run_d": {
+    "description": "Baseline Neither",
+    "output_file": "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\output\\ident_watermark_verify\\verify_run_d_baseline_neither.mp4",
+    "render_time_s": 10.44,
+    "video_width": 3840,
+    "video_height": 2160,
+    "video_packets": 300,
+    "video_duration_s": 10.0,
+    "format_duration_s": 10.0,
+    "video_encoder": "Lavc63.1.102 h264_amf",
+    "audio_codec": "pcm_s24le",
+    "audio_duration_s": 10.0,
+    "thumbnails": [
+      "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\docs\\thumbnails\\ident_outro_watermark\\run_d_baseline_t5.0s.jpg"
+    ]
+  },
+  "run_e": {
+    "description": "Vertical 9:16 Both Outro and Watermark",
+    "output_file": "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\output\\ident_watermark_verify\\verify_run_e_vertical_both.mp4",
+    "render_time_s": 12.74,
+    "video_width": 1080,
+    "video_height": 1920,
+    "video_packets": 480,
+    "video_duration_s": 16.0,
+    "format_duration_s": 16.006,
+    "video_encoder": "Lavc63.1.102 h264_amf",
+    "audio_codec": "pcm_s24le",
+    "audio_duration_s": 16.006,
+    "thumbnails": [
+      "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\docs\\thumbnails\\ident_outro_watermark\\run_e_vertical_main_t5.0s.jpg",
+      "C:\\BeatSyncTest\\app\\BeatSync-Engine-main\\docs\\thumbnails\\ident_outro_watermark\\run_e_vertical_outro_t13.0s.jpg"
+    ]
+  }
+}

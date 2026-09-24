@@ -58,6 +58,10 @@ def build_render_plan(
     title_theme: str = 'Auto (AI mood match)',
     mood_signature: Dict[str, Any] | None = None,
     export_orientation: str | None = None,
+    ident_outro_enabled: bool = False,
+    ident_clip_path: str | None = None,
+    watermark_enabled: bool = False,
+    watermark_image: str | None = None,
 ) -> Dict[str, Any]:
     """Assemble the serialisable plan dict for a finished render."""
     computed_orientation = export_orientation or (
@@ -88,6 +92,10 @@ def build_render_plan(
         'title_theme': str(title_theme),
         'mood_signature': dict(mood_signature or {}),
         'transitions': [t for t in transitions] if transitions is not None else [],
+        'ident_outro_enabled': bool(ident_outro_enabled),
+        'ident_clip_path': ident_clip_path,
+        'watermark_enabled': bool(watermark_enabled),
+        'watermark_image': watermark_image,
         'text_settings': dict(text_settings or {}),
         'clips': [dict(c) for c in clips],
     }

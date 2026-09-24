@@ -423,7 +423,9 @@ def _store_render_plan(*, beat_info: dict, output_path: str, audio_file: str,
                         text_settings: dict, transitions_enabled: bool = True,
                         title_card_enabled: bool = False,
                         title_theme: str = THEME_AUTO,
-                        export_orientation: str = ORIENTATION_LANDSCAPE) -> str | None:
+                        export_orientation: str = ORIENTATION_LANDSCAPE,
+                        ident_outro_enabled: bool = False,
+                        watermark_enabled: bool = False) -> str | None:
     """Persist the rendered clip plan so single clips can be nudged later.
 
     A failure here must never invalidate an otherwise successful render.
@@ -455,6 +457,8 @@ def _store_render_plan(*, beat_info: dict, output_path: str, audio_file: str,
             transitions=plan_data.get('transitions'),
             title_theme=title_theme,
             mood_signature=plan_data.get('mood_signature'),
+            ident_outro_enabled=ident_outro_enabled,
+            watermark_enabled=watermark_enabled,
         )
         return clip_plan.save_render_plan(plan, clip_plan.plan_path_for_output(output_path))
     except Exception as exc:
@@ -485,6 +489,8 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        title_card_enabled: bool = False,
                        title_theme: str = THEME_AUTO,
                        export_orientation: str = ORIENTATION_LANDSCAPE,
+                       ident_outro_enabled: bool = False,
+                       watermark_enabled: bool = False,
                        progress_callback: Callable[[str], None] | None = None,
                        console_logger: StageConsoleLogger | None = None) -> StatusResult:
     total_started = time.perf_counter()
@@ -659,6 +665,8 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             title_card_enabled=title_card_enabled,
             title_theme=title_theme,
             export_orientation=export_orientation,
+            ident_outro_enabled=ident_outro_enabled,
+            watermark_enabled=watermark_enabled,
         )
 
         # Move to output folder
@@ -693,6 +701,8 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             title_card_enabled=title_card_enabled,
             title_theme=title_theme,
             export_orientation=export_orientation,
+            ident_outro_enabled=ident_outro_enabled,
+            watermark_enabled=watermark_enabled,
         )
         if plan_path:
             session_state['last_plan_path'] = plan_path
@@ -774,7 +784,9 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  transitions_enabled: bool = True,
                  title_card_enabled: bool = False,
                  title_theme: str = THEME_AUTO,
-                 export_orientation: str = ORIENTATION_LANDSCAPE) -> Iterator[StatusResult]:
+                 export_orientation: str = ORIENTATION_LANDSCAPE,
+                 ident_outro_enabled: bool = False,
+                 watermark_enabled: bool = False) -> Iterator[StatusResult]:
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
     initial_status = _stage_status(1)
@@ -818,6 +830,8 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                     title_card_enabled=title_card_enabled,
                     title_theme=title_theme,
                     export_orientation=export_orientation,
+                    ident_outro_enabled=ident_outro_enabled,
+                    watermark_enabled=watermark_enabled,
                     progress_callback=progress_callback,
                     console_logger=console_logger,
                 )
@@ -1069,6 +1083,10 @@ def _rerender_from_plan_impl(state: dict, progress_callback: Callable[[str], Non
                 title_card_enabled=bool(plan.get('title_card_enabled', False)),
                 title_theme=str(plan.get('title_theme') or text_settings.get('title_theme', THEME_AUTO)),
                 export_orientation=plan.get('export_orientation') or ('Vertical (9:16 — Instagram/Reels)' if plan.get('target_resolution') and plan['target_resolution'][1] > plan['target_resolution'][0] else 'Landscape (16:9)'),
+                ident_outro_enabled=bool(plan.get('ident_outro_enabled', False)),
+                ident_clip_path=plan.get('ident_clip_path'),
+                watermark_enabled=bool(plan.get('watermark_enabled', False)),
+                watermark_image=plan.get('watermark_image'),
             )
             shutil.move(result_path, output_path)
 
@@ -1108,6 +1126,10 @@ def _rerender_from_plan_impl(state: dict, progress_callback: Callable[[str], Non
             title_theme=str(plan.get('title_theme') or text_settings.get('title_theme', THEME_AUTO)),
             mood_signature=plan.get('mood_signature'),
             transitions=plan.get('transitions'),
+            ident_outro_enabled=bool(plan.get('ident_outro_enabled', False)),
+            ident_clip_path=plan.get('ident_clip_path'),
+            watermark_enabled=bool(plan.get('watermark_enabled', False)),
+            watermark_image=plan.get('watermark_image'),
         )
         new_plan_path = clip_plan.save_render_plan(new_plan, clip_plan.plan_path_for_output(output_path))
 
@@ -1265,6 +1287,8 @@ def _default_settings_state() -> dict:
         'max_clip_seconds': None,
         'export_orientation': ORIENTATION_LANDSCAPE,
         'transitions_enabled': True,
+        'ident_outro_enabled': False,
+        'watermark_enabled': False,
         'start_text': '', 'start_text_position': 'bottom_center', 'start_text_duration': 3.0,
         'title_card_enabled': False,
         'title_theme': THEME_AUTO,
@@ -1371,6 +1395,8 @@ _SETTINGS_KEYS = [
     'clip_order_mode', 'min_subject_confidence', 'max_clip_seconds',
     'export_orientation',
     'transitions_enabled',
+    'ident_outro_enabled',
+    'watermark_enabled',
     'start_text', 'start_text_position', 'start_text_duration',
     'title_card_enabled',
     'title_theme',
@@ -1518,6 +1544,16 @@ def create_ui() -> gr.Blocks:
                         label=LABEL_TRANSITIONS_ENABLED,
                         info=INFO_TRANSITIONS_ENABLED,
                     )
+                    ident_outro_enabled = gr.Checkbox(
+                        value=False,
+                        label=LABEL_IDENT_OUTRO_ENABLED,
+                        info=INFO_IDENT_OUTRO_ENABLED,
+                    )
+                    watermark_enabled = gr.Checkbox(
+                        value=False,
+                        label=LABEL_WATERMARK_ENABLED,
+                        info=INFO_WATERMARK_ENABLED,
+                    )
                     with gr.Group():
                         gr.Markdown('#### 📝 Text Overlays & Title Card')
                         start_text = gr.Textbox(label=LABEL_START_TEXT, info=INFO_START_TEXT, lines=3, max_lines=8)
@@ -1625,6 +1661,8 @@ def create_ui() -> gr.Blocks:
                 transitions_enabled, title_card_enabled,
                 title_theme,
                 export_orientation,
+                ident_outro_enabled,
+                watermark_enabled,
             ],
             outputs=[video_output, status_output, session_state],
             show_progress='hidden'
@@ -1748,6 +1786,8 @@ def create_ui() -> gr.Blocks:
             clip_order_mode, min_subject_confidence, max_clip_seconds,
             export_orientation,
             transitions_enabled,
+            ident_outro_enabled,
+            watermark_enabled,
             start_text, start_text_position, start_text_duration,
             title_card_enabled,
             title_theme,

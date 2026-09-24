@@ -64,4 +64,23 @@ def get_output_dir() -> str:
     return OUTPUT_DIR
 
 
+ASSETS_DIR = os.path.join(ROOT_DIR, 'assets')
+DEFAULT_IDENT_ASSET_PATH = os.environ.get(
+    'BEATSYNC_IDENT_ASSET_PATH',
+    r'D:\BeatSync-Assets\TDD_Intro_3D_1.mov'
+)
+DEFAULT_WATERMARK_ASSET_PATH = os.path.join(ASSETS_DIR, 'tdd_watermark.png')
+
+
+def get_ident_asset_path() -> str:
+    """Get the path to the 3D branding ident clip."""
+    return DEFAULT_IDENT_ASSET_PATH
+
+
+def get_watermark_asset_path() -> str:
+    """Get the path to the static watermark logo PNG."""
+    return DEFAULT_WATERMARK_ASSET_PATH
+
+
 ensure_project_dirs()
+

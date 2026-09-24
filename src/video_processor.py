@@ -51,6 +51,7 @@ from ffmpeg_processing import (
     extract_prores_segment_random,
     concatenate_videos_ffmpeg,
     add_text_overlays_ffmpeg,
+    append_ident_outro,
     seconds_to_frame_count,
     frame_count_to_seconds,
 )
@@ -362,6 +363,30 @@ def parse_arguments() -> argparse.Namespace:
         type=str,
         default='Auto (AI mood match)',
         help='Visual title theme: "Auto (AI mood match)", "Warm & Sentimental", "Joyful & Bright", or "Upbeat & Energetic"'
+    )
+    parser.add_argument(
+        '--ident-outro',
+        action='store_true',
+        default=False,
+        help='Append Tomasz\'s 3D logo ident clip to the end of the video with full audio'
+    )
+    parser.add_argument(
+        '--ident-path',
+        type=str,
+        default=None,
+        help='Custom path to the 3D ident outro video file (default: configured default)'
+    )
+    parser.add_argument(
+        '--watermark',
+        action='store_true',
+        default=False,
+        help='Overlay persistent semi-transparent watermark logo mark on main video'
+    )
+    parser.add_argument(
+        '--watermark-path',
+        type=str,
+        default=None,
+        help='Custom path to the watermark PNG image file (default: assets/tdd_watermark.png)'
     )
 
     return parser.parse_args()
@@ -965,7 +990,13 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                       transitions_enabled: bool = True,
                       title_card_enabled: bool = False,
                       title_theme: str = 'Auto (AI mood match)',
-                      export_orientation: str = 'Landscape (16:9)') -> str:
+                      export_orientation: str = 'Landscape (16:9)',
+                      ident_outro_enabled: bool = False,
+                      ident_clip_path: str | None = None,
+                      watermark_enabled: bool = False,
+                      watermark_image: str | None = None,
+                      watermark_position: str = 'bottom_right',
+                      watermark_opacity: float = 0.60) -> str:
     """
     Creates a music video with video clips cut to detected beats.
     
@@ -1383,7 +1414,18 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             fade_in=fade_in_seconds, fade_out=fade_out_seconds,
             title_card_enabled=title_card_enabled,
             theme_preset=theme_preset,
+            watermark_enabled=watermark_enabled,
+            watermark_image=watermark_image,
+            watermark_position=watermark_position,
+            watermark_opacity=watermark_opacity,
         )
+        if ident_outro_enabled:
+            output_file = append_ident_outro(
+                output_file,
+                ident_clip_path=ident_clip_path,
+                use_nvenc=False,
+                fps=fps,
+            )
         return output_file
     
     # STANDARD MODE - Direct parallel processing (NO BATCHES)
@@ -1541,7 +1583,19 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             font_file=text_font_file, fade_in=fade_in_seconds, fade_out=fade_out_seconds,
             title_card_enabled=title_card_enabled,
             theme_preset=theme_preset,
+            watermark_enabled=watermark_enabled,
+            watermark_image=watermark_image,
+            watermark_position=watermark_position,
+            watermark_opacity=watermark_opacity,
         )
+        if ident_outro_enabled:
+            output_file = append_ident_outro(
+                output_file,
+                ident_clip_path=ident_clip_path,
+                use_nvenc=use_nvenc,
+                gpu_encoder=gpu_encoder,
+                fps=fps,
+            )
         return output_file
  
  
@@ -1665,6 +1719,10 @@ def main() -> None:
         start_text=args.start_text,
         title_theme=args.title_theme,
         export_orientation='Vertical (9:16 — Instagram/Reels)' if is_vertical else 'Landscape (16:9)',
+        ident_outro_enabled=args.ident_outro,
+        ident_clip_path=args.ident_path,
+        watermark_enabled=args.watermark,
+        watermark_image=args.watermark_path,
     )
  
     print(f'✅ Music video created successfully: {output_file}')
