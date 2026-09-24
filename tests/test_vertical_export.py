@@ -43,6 +43,34 @@ except ImportError:
     _SETTINGS_KEYS = None
 
 
+def _split_unescaped(text: str, sep: str) -> list:
+    """Split on `sep`, treating a backslash-escaped `\\sep` as a literal (not a split
+    point) per ffmpeg filtergraph escaping -- and unescape it back to a plain `sep` in
+    the result, since callers want the value ffmpeg itself would see."""
+    placeholder = "\x00"
+    protected = text.replace("\\" + sep, placeholder)
+    return [p.replace(placeholder, sep) for p in protected.split(sep)]
+
+
+def _extract_crop_x_field(filter_str: str) -> str:
+    """Pull the raw crop_x field out of a 'crop=w:h:x:y' filter, honoring the
+    backslash-escaped comma an eased expression's min(1\\,t/E) may contain."""
+    crop_args = _split_unescaped(filter_str.split("crop=")[1], ",")[0]
+    return crop_args.split(":")[2]
+
+
+def _resolve_crop_x(raw: str, t: float) -> float:
+    """Resolve a crop_x field that may be a plain int or an eased ffmpeg expr.
+
+    Eased expressions use 't' (seconds) and '^' (power); evaluate them the same
+    way ffmpeg would at a given t so tests can assert on start/mid/settled values.
+    """
+    try:
+        return float(int(raw))
+    except ValueError:
+        return eval(raw.replace('^', '**'), {"min": min, "t": t})  # noqa: S307
+
+
 class TestVerticalExport(unittest.TestCase):
     """Test suite for vertical export mode and smart crop-to-fill."""
 
@@ -70,19 +98,17 @@ class TestVerticalExport(unittest.TestCase):
         self.assertIn("pad=1080:1920:0:(oh-ih)/2:color=black", filter_str)
 
     def test_build_crop_to_fill_filter_clamping_left_edge(self):
-        """Test subject on far left of 4K frame clamps crop window to 0."""
+        """Test subject on far left of 4K frame clamps crop window to 0 (once settled)."""
         bbox = (0.01, 0.1, 0.09, 0.9)  # cx = 0.05
         filter_str = build_crop_to_fill_filter(3840, 2160, 1080, 1920, subject_bbox=bbox)
-        parts = filter_str.split("crop=")[1].split(",")[0].split(":")
-        crop_x = int(parts[2])
+        crop_x = _resolve_crop_x(_extract_crop_x_field(filter_str), t=10.0)
         self.assertEqual(crop_x, 0, "Far-left subject must clamp crop_x to 0")
 
     def test_build_crop_to_fill_filter_clamping_right_edge(self):
-        """Test subject on far right of 4K frame clamps crop window to max_x."""
+        """Test subject on far right of 4K frame clamps crop window to max_x (once settled)."""
         bbox = (0.91, 0.1, 0.99, 0.9)  # cx = 0.95
         filter_str = build_crop_to_fill_filter(3840, 2160, 1080, 1920, subject_bbox=bbox)
-        parts = filter_str.split("crop=")[1].split(",")[0].split(":")
-        crop_x = int(parts[2])
+        crop_x = _resolve_crop_x(_extract_crop_x_field(filter_str), t=10.0)
         max_x = 3414 - 1080  # 2334
         self.assertEqual(crop_x, max_x, f"Far-right subject must clamp crop_x to {max_x}")
 
@@ -113,13 +139,42 @@ class TestVerticalExport(unittest.TestCase):
         bbox = (0.73, 0.00, 1.00, 0.98)
         filter_str = build_crop_to_fill_filter(3840, 2160, 1080, 1920, bbox)
         scale_part = filter_str.split("scale=")[1].split(",")[0].split(":")
-        crop_part = filter_str.split("crop=")[1].split(",")[0].split(":")
         scaled_width = int(scale_part[0])
-        crop_x = int(crop_part[2])
+        crop_x = _resolve_crop_x(_extract_crop_x_field(filter_str), t=10.0)
         visible_x0 = crop_x / scaled_width
         visible_x1 = (crop_x + 1080) / scaled_width
         self.assertLessEqual(visible_x0, bbox[0])
         self.assertGreaterEqual(visible_x1, bbox[2])
+
+    def test_crop_ease_starts_centered_and_settles_at_final_offset(self):
+        """Off-center subject: x should start at frame center and ease to the final offset."""
+        bbox = (0.91, 0.1, 0.99, 0.9)  # far right, cx = 0.95
+        filter_str = build_crop_to_fill_filter(3840, 2160, 1080, 1920, subject_bbox=bbox, clip_duration=2.0)
+        crop_x_raw = _extract_crop_x_field(filter_str)
+        self.assertIn("t/", crop_x_raw, "Off-center offset should produce a time-varying expression")
+        start_x = _resolve_crop_x(crop_x_raw, t=0.0)
+        mid_x = _resolve_crop_x(crop_x_raw, t=0.2)
+        end_x = _resolve_crop_x(crop_x_raw, t=10.0)
+        max_x = 3414 - 1080
+        self.assertAlmostEqual(start_x, (3414 - 1080) / 2.0, delta=2, msg="Ease must start near geometric center")
+        self.assertEqual(end_x, max_x)
+        self.assertTrue(start_x < mid_x < end_x, "Mid-ease value must lie strictly between start and end")
+
+    def test_crop_ease_clamps_for_short_clips(self):
+        """A clip much shorter than the nominal ease window must fully settle well before it ends."""
+        bbox = (0.91, 0.1, 0.99, 0.9)
+        filter_str = build_crop_to_fill_filter(3840, 2160, 1080, 1920, subject_bbox=bbox, clip_duration=0.5)
+        crop_x_raw = _extract_crop_x_field(filter_str)
+        # min(0.4, 0.5*0.4) = 0.2s ease window -- must be fully settled by 0.3s into a 0.5s clip.
+        settled_early = _resolve_crop_x(crop_x_raw, t=0.3)
+        settled_late = _resolve_crop_x(crop_x_raw, t=10.0)
+        self.assertEqual(settled_early, settled_late, "Short clip must settle well before its own end")
+
+    def test_crop_ease_skipped_when_final_offset_is_already_center(self):
+        """No bbox (or an effectively-centered one) must render a static crop_x, not an expression."""
+        filter_str = build_crop_to_fill_filter(3840, 2160, 1080, 1920, subject_bbox=None, clip_duration=2.0)
+        crop_x_raw = _extract_crop_x_field(filter_str)
+        int(crop_x_raw)  # must parse as a plain integer -- no ease expression at all
 
     def test_landscape_letterbox_behavior_unchanged(self):
         """Confirm existing build_fit_scale_filter retains letterbox/pad for landscape export."""

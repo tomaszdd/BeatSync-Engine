@@ -320,12 +320,42 @@ def approximate_head_region(
     return x0, y0, x1, y0 + max(0.0, y1 - y0) * 0.20
 
 
+# Nominal duration of the per-clip crop settle-in ease (see build_crop_to_fill_filter).
+# Kept mid-range of the requested 0.3-0.5s window; short clips scale this down.
+_CROP_EASE_DURATION_S = 0.4
+
+# Below this pixel gap, a subject-aware offset is treated as "already centered" --
+# not worth an ease (avoids pointless sub-pixel motion on effectively-centered crops).
+_CROP_EASE_MIN_OFFSET_PX = 2
+
+
+def _eased_crop_x_expr(start_x: int, end_x: int, ease_seconds: float) -> str:
+    """FFmpeg 'x' expression that smoothstep-eases start_x -> end_x over ease_seconds.
+
+    Uses the standard smoothstep curve 3p^2 - 2p^3 on progress p = t/ease_seconds.
+    'min(1, ...)' clamps p at 1 once the ease window has elapsed, so the same
+    expression naturally holds at end_x for the rest of the clip -- no separate
+    branch/if() needed. 't' is seconds since this filtergraph's own start, which
+    is per-clip here since each extracted clip is trimmed and PTS-reset upstream.
+    """
+    if start_x == end_x:
+        return str(end_x)
+    ease_seconds = max(0.001, float(ease_seconds))
+    # ',' is the filtergraph filter-separator, so the comma inside min(...)'s
+    # argument list must be backslash-escaped or ffmpeg splits the filter chain
+    # here instead of parsing it as part of crop's x value.
+    p = f"min(1\\,t/{ease_seconds:.4f})"
+    smoothstep = f"(3*{p}^2-2*{p}^3)"
+    return f"({start_x}+({end_x}-{start_x})*{smoothstep})"
+
+
 def build_crop_to_fill_filter(
     source_width: int,
     source_height: int,
     target_width: int = 1080,
     target_height: int = 1920,
     subject_bbox: Tuple[float, float, float, float] | None = None,
+    clip_duration: float | None = None,
 ) -> str:
     """Scale source to fill target canvas and crop horizontally/vertically.
 
@@ -333,7 +363,18 @@ def build_crop_to_fill_filter(
     then crops target_width horizontally centered on the detected subject bbox
     (falling back to geometric center 0.5 when no bbox is available), clamped
     so the crop window never exceeds source boundaries.
+
+    When subject_bbox yields a horizontal offset meaningfully different from
+    center, the crop's x position eases in from center to that final offset
+    over the first ~0.3-0.5s of the clip (smoothstep, not linear), then holds
+    static -- a subtle "settle into place" instead of an instant snap. This is
+    NOT continuous panning: after the ease window the position is constant for
+    the rest of the clip, same as before. clip_duration (seconds) clamps the
+    ease window down for short clips so it can never eat the whole clip.
     """
+    ease_duration = _CROP_EASE_DURATION_S
+    if clip_duration is not None and clip_duration > 0 and clip_duration < 2 * _CROP_EASE_DURATION_S:
+        ease_duration = min(_CROP_EASE_DURATION_S, clip_duration * 0.4)
     sw = max(2, int(source_width))
     sh = max(2, int(source_height))
     tw = max(2, int(target_width))
@@ -373,8 +414,14 @@ def build_crop_to_fill_filter(
                 max_fit_x = max(0, fit_w - tw)
                 fit_x = int(round((cx_norm * fit_w - tw / 2.0) / 2.0)) * 2
                 fit_x = max(0, min(max_fit_x, fit_x))
+                fit_center_x = int(round((0.5 * fit_w - tw / 2.0) / 2.0)) * 2
+                fit_center_x = max(0, min(max_fit_x, fit_center_x))
+                if abs(fit_x - fit_center_x) < _CROP_EASE_MIN_OFFSET_PX:
+                    fit_x_expr = str(fit_x)
+                else:
+                    fit_x_expr = _eased_crop_x_expr(fit_center_x, fit_x, ease_duration)
                 return (
-                    f"scale={fit_w}:{fit_h},crop={tw}:{fit_h}:{fit_x}:0,"
+                    f"scale={fit_w}:{fit_h},crop={tw}:{fit_h}:{fit_x_expr}:0,"
                     f"pad={tw}:{th}:0:(oh-ih)/2:color=black,setsar=1"
                 )
 
@@ -384,8 +431,14 @@ def build_crop_to_fill_filter(
         crop_center_x = cx_norm * scaled_w
         crop_x = int(round((crop_center_x - tw / 2.0) / 2.0)) * 2
         crop_x = max(0, min(max_x, crop_x))
+        neutral_x = int(round((0.5 * scaled_w - tw / 2.0) / 2.0)) * 2
+        neutral_x = max(0, min(max_x, neutral_x))
+        if abs(crop_x - neutral_x) < _CROP_EASE_MIN_OFFSET_PX:
+            crop_x_expr = str(crop_x)
+        else:
+            crop_x_expr = _eased_crop_x_expr(neutral_x, crop_x, ease_duration)
     else:
-        crop_x = 0
+        crop_x_expr = "0"
 
     # Vertical crop offset
     max_y = max(0, scaled_h - th)
@@ -396,7 +449,7 @@ def build_crop_to_fill_filter(
     else:
         crop_y = 0
 
-    return f"scale={scaled_w}:{scaled_h},crop={tw}:{th}:{crop_x}:{crop_y},setsar=1"
+    return f"scale={scaled_w}:{scaled_h},crop={tw}:{th}:{crop_x_expr}:{crop_y},setsar=1"
 
 
 def create_looping_image_video(image_file: str, output_file: str, duration: float,
@@ -1382,7 +1435,10 @@ def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: fl
             width, height = target_size
             if height > width:
                 src_w, src_h = get_video_resolution(video_file)
-                filters.append(build_crop_to_fill_filter(src_w, src_h, width, height, subject_bbox))
+                filters.append(build_crop_to_fill_filter(
+                    src_w, src_h, width, height, subject_bbox,
+                    clip_duration=exact_source_duration,
+                ))
             else:
                 filters.append(build_fit_scale_filter(width, height))
         
