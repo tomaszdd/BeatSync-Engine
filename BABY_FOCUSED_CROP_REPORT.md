@@ -70,5 +70,16 @@ Hardware artifacts remain on UM890 under:
 The following commands were run after pushing to `origin/main`:
 
 ```text
-POST_PUSH_OUTPUT_PENDING
+$ git status --short --branch
+## main...origin/main
+?? AGENTS.md
+?? docs/inspect_frames/
+?? scripts/inspect_boxes.py
+?? scripts/test_nms.py
+?? scripts/test_select.py
+
+$ git log origin/main..HEAD --oneline
+[no output]
 ```
+
+The untracked files shown above predated the final implementation commit and were preserved rather than silently deleting or including unrelated workspace material. The empty log proves the pushed branch and local `HEAD` were aligned at the time of this post-push check.
