@@ -191,9 +191,9 @@ nothing to commit, working tree clean
 
 ### `git log -1`
 ```
-commit [INSERT_HASH] (HEAD -> main, origin/main, origin/HEAD)
+commit 5e85b7d87f91939187a76cc52706e859d0067a2c (HEAD -> main, origin/main, origin/HEAD)
 Author: pi <pi@scratch>
-Date:   Thu Sep 24 14:26:00 2026 +0100
+Date:   Thu Sep 24 14:26:46 2026 +0100
 
     feat(export): add vertical (9:16 — 1080x1920) export mode with smart subject crop-to-fill
 ```
