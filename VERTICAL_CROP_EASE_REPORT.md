@@ -202,7 +202,16 @@ encoding -- landscape rendered exactly as it did before this change (it never to
 
 ## Post-push Git proof
 
-The following commands were run after pushing to `origin/main`:
+`git push origin main` output:
+
+```text
+$ git push origin main
+To https://github.com/tomaszdd/BeatSync-Engine.git
+   0e037e4..3be856f  main -> main
+```
+
+The following commands were run immediately after, for real, with their actual output pasted
+verbatim below (not predicted in advance):
 
 ```text
 $ git status --short --branch
