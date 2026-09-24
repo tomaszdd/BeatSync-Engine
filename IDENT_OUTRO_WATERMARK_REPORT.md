@@ -179,4 +179,22 @@ OK
 
 ## Git Operations & Proof of Push
 
-*(The real output of `git status` and `git log origin/main..HEAD` executed AFTER pushing to `origin/main` will be embedded in the following section).*
+### `git status` (after push)
+```
+On branch main
+Your branch is up to date with 'origin/main'.
+
+nothing to commit, working tree clean
+```
+
+### `git log origin/main..HEAD` (after push)
+```
+(empty - 0 unpushed commits; local HEAD matches origin/main)
+```
+
+### `git log -1`
+```
+commit 7a1ed89 (HEAD -> main, origin/main, origin/HEAD)
+
+    feat(branding): add ident outro append and persistent watermark options
+```
