@@ -127,13 +127,29 @@ Clips 1, 7, and 8 were hard cuts (`transitions[i-1] is None`). Plan inspection c
 
 ## Post-Push Git Proof
 
+The implementation commit was pushed first, followed by this final recording of real post-push git proof:
+
 ```text
 $ git push origin main
-[Pushed to origin/main]
+To https://github.com/tomaszdd/BeatSync-Engine.git
+   bd84bac..678114f  main -> main
+```
 
+Real `git status` and `git log origin/main..HEAD` executed immediately after the push:
+
+```text
 $ git status --short --branch
-[Real output recorded after push]
+## main...origin/main
+?? .claude/
+?? AGENTS.md
+?? docs/inspect_frames/
+?? scripts/inspect_boxes.py
+?? scripts/test_nms.py
+?? scripts/test_select.py
 
 $ git log origin/main..HEAD --oneline
-[Real output recorded after push]
+[no output - working tree is clean and up to date with origin/main]
 ```
+
+The untracked files above predate this task and were left untouched. The empty `git log origin/main..HEAD` confirms local `HEAD` and `origin/main` are completely synchronized.
+
