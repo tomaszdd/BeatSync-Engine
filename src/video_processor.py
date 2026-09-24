@@ -54,6 +54,9 @@ from ffmpeg_processing import (
     append_ident_outro,
     seconds_to_frame_count,
     frame_count_to_seconds,
+    calculate_settled_crop_x,
+    _ULTRA_SHORT_CLIP_FLOOR,
+    _CROP_EASE_MIN_OFFSET_PX,
 )
 from auto_mode.stage6_av_planner import (
     build_planned_clip_sequence,
@@ -507,6 +510,163 @@ def build_frame_aligned_cut_timeline(beat_times: BeatTimes, audio_duration: floa
     return cut_times, segment_frames, segment_durations, dropped_boundaries
 
 
+def prepare_vertical_crop_continuity(
+    planned_clip_sequence: List[Dict],
+    segment_durations: Sequence[float],
+    transitions: Sequence[float | None] | None,
+    in_handles: Sequence[float],
+    out_handles: Sequence[float],
+    target_size: Tuple[int, int],
+    vertical_crop_focus: str = "Auto (prefer smaller subject — baby/child)",
+    max_workers: int = 8,
+) -> None:
+    """Pre-resolve subject bboxes and configure cut-to-cut crop continuity for vertical export.
+
+    Guarantees:
+    1. Ultra-short clips (< 0.4s) skip independent YOLO detection and ease-in, inheriting
+       their crop framing from adjacent clips to prevent single-frame jarring snap/flash.
+    2. Crossfade boundaries wire the incoming clip's ease start to the outgoing clip's settled
+       crop position, so both blending video streams share framing during the blend window and
+       only diverge smoothly toward the incoming clip's final position after the crossfade resolves.
+    3. Hard cuts start their ease from frame-center, as before.
+    4. Modifies planned_clip_sequence in-place with 'subject_bbox', 'crop_settled_x',
+       'crop_initial_x', 'crop_ease', 'transition_duration', 'skip_ease', 'ultra_short_skip',
+       which persist cleanly into render_plan_data (plan.json).
+    """
+    total_clips = len(planned_clip_sequence)
+    if total_clips == 0 or target_size[1] <= target_size[0]:
+        return
+
+    is_center = ("center" in vertical_crop_focus.lower())
+    tw, th = target_size
+
+    # Phase 1: Determine which clips are ultra-short and sample/detect subjects for normal clips
+    detections: List[Tuple[float, float, float, float] | None] = [None] * total_clips
+    detect_tasks = []
+
+    for i in range(total_clips):
+        clip = planned_clip_sequence[i]
+        dur = float(segment_durations[i])
+        is_ultra_short = (dur < _ULTRA_SHORT_CLIP_FLOOR)
+        if is_ultra_short:
+            clip['ultra_short_skip'] = True
+            clip['skip_ease'] = True
+        else:
+            clip['ultra_short_skip'] = False
+            clip['skip_ease'] = False
+            if clip.get('subject_bbox_resolved'):
+                detections[i] = clip.get('subject_bbox')
+            elif not is_center:
+                vfile = clip.get('video_file')
+                if vfile and os.path.isfile(vfile):
+                    video_dur = get_video_duration(vfile)
+                    base_duration = float(clip.get('source_duration', dur))
+                    base_duration = max(0.05, min(base_duration, video_dur))
+                    max_start = max(0.0, video_dur - base_duration)
+                    base_start = max(0.0, min(float(clip.get('start_time', 0.0)), max_start))
+                    in_h = in_handles[i] if i < len(in_handles) else 0.0
+                    out_h = out_handles[i] if i < len(out_handles) else 0.0
+                    c_start = max(0.0, base_start - in_h)
+                    s_dur = max(0.05, in_h + base_duration + out_h)
+                    detect_tasks.append((i, vfile, c_start, s_dur))
+                else:
+                    detections[i] = clip.get('subject_bbox')
+
+    if detect_tasks:
+        try:
+            from subject_detection import detect_subject_bbox_for_clip
+            workers = min(max_workers, len(detect_tasks))
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                future_to_idx = {
+                    executor.submit(
+                        detect_subject_bbox_for_clip,
+                        vfile, c_start, s_dur,
+                        focus_mode=vertical_crop_focus
+                    ): idx
+                    for idx, vfile, c_start, s_dur in detect_tasks
+                }
+                for fut in as_completed(future_to_idx):
+                    idx = future_to_idx[fut]
+                    try:
+                        detections[idx] = fut.result()
+                    except Exception:
+                        detections[idx] = None
+        except Exception:
+            pass
+
+    # Phase 2: Propagate subject bboxes for ultra-short clips from adjacent clips
+    for i in range(total_clips):
+        clip = planned_clip_sequence[i]
+        if clip.get('ultra_short_skip'):
+            if i > 0:
+                detections[i] = detections[i - 1]
+            else:
+                next_box = None
+                for j in range(1, total_clips):
+                    if not planned_clip_sequence[j].get('ultra_short_skip'):
+                        next_box = detections[j]
+                        break
+                detections[i] = next_box
+
+        clip['subject_bbox'] = detections[i]
+        clip['subject_bbox_resolved'] = True
+
+    # Phase 3: Compute settled crop position (in pixels) for every clip
+    settled_crop_xs: List[int] = [0] * total_clips
+    scaled_widths: List[int] = [tw] * total_clips
+
+    for i in range(total_clips):
+        clip = planned_clip_sequence[i]
+        vfile = clip.get('video_file', '')
+        try:
+            sw, sh = get_video_resolution(vfile)
+        except Exception:
+            sw, sh = tw, th
+
+        scale = max(tw / float(sw), th / float(sh))
+        sc_w = int(round(sw * scale / 2.0)) * 2
+        scaled_widths[i] = max(tw, sc_w)
+
+        settled_x = calculate_settled_crop_x(sw, sh, tw, th, clip.get('subject_bbox'))
+        settled_crop_xs[i] = settled_x
+        clip['crop_settled_x'] = settled_x
+
+    # Phase 4: Wire transition continuity (crossfades start from outgoing clip's settled crop_x)
+    for i in range(total_clips):
+        clip = planned_clip_sequence[i]
+        is_ultra_short = clip.get('ultra_short_skip', False)
+        sc_w = scaled_widths[i]
+        max_x = max(0, sc_w - tw)
+        neutral_x = int(round((0.5 * sc_w - tw / 2.0) / 2.0)) * 2
+        neutral_x = max(0, min(max_x, neutral_x))
+
+        if i == 0:
+            clip['initial_crop_x'] = None
+            clip['transition_duration'] = None
+            clip['crop_initial_x'] = "center"
+            clip['crop_ease'] = (not is_ultra_short and abs(settled_crop_xs[i] - neutral_x) >= _CROP_EASE_MIN_OFFSET_PX)
+        else:
+            t = transitions[i - 1] if (transitions and i - 1 < len(transitions)) else None
+            if t is not None and t > 0:
+                # Crossfade boundary: map previous clip's settled crop_x
+                sc_w_prev = scaled_widths[i - 1]
+                prev_x = settled_crop_xs[i - 1]
+                norm_center = (prev_x + tw / 2.0) / float(sc_w_prev)
+                start_x = int(round((norm_center * sc_w - tw / 2.0) / 2.0)) * 2
+                start_x = max(0, min(max_x, start_x))
+
+                clip['initial_crop_x'] = start_x
+                clip['transition_duration'] = float(t)
+                clip['crop_initial_x'] = start_x
+                clip['crop_ease'] = (not is_ultra_short and abs(settled_crop_xs[i] - start_x) >= _CROP_EASE_MIN_OFFSET_PX)
+            else:
+                # Hard cut boundary: ease from frame center
+                clip['initial_crop_x'] = None
+                clip['transition_duration'] = None
+                clip['crop_initial_x'] = "center"
+                clip['crop_ease'] = (not is_ultra_short and abs(settled_crop_xs[i] - neutral_x) >= _CROP_EASE_MIN_OFFSET_PX)
+
+
 def create_clip_parallel(args):
     """
     Wrapper function for parallel clip creation using FFmpeg.
@@ -580,29 +740,39 @@ def create_clip_parallel(args):
                 f"— cut from {clip_start:.1f}s into the source"
             )
 
-        # Resolve subject bounding box for smart crop in vertical mode
+        # Resolve subject bounding box and crop continuity parameters
         subject_bbox = None
+        initial_crop_x = None
+        transition_duration = None
+        skip_ease = False
+
         if planned_clip and isinstance(planned_clip, dict):
             subject_bbox = planned_clip.get('subject_bbox')
+            initial_crop_x = planned_clip.get('initial_crop_x')
+            transition_duration = planned_clip.get('transition_duration')
+            skip_ease = planned_clip.get('skip_ease', False)
 
         if target_size and target_size[1] > target_size[0]:
-            # Planner bboxes belong to Layer 1's legacy single-anchor scoring.
-            # Always replace them for vertical output so every focus policy is
-            # honored, including saved-plan re-renders and explicit center crop.
-            subject_bbox = None
-            if "center" not in vertical_crop_focus.lower():
-                try:
-                    from subject_detection import detect_subject_bbox_for_clip
-                    subject_bbox = detect_subject_bbox_for_clip(
-                        video_file, clip_start, source_duration, focus_mode=vertical_crop_focus
-                    )
-                except Exception:
-                    subject_bbox = None
-            if planned_clip is not None and isinstance(planned_clip, dict):
-                if subject_bbox is None:
-                    planned_clip.pop('subject_bbox', None)
-                else:
-                    planned_clip['subject_bbox'] = subject_bbox
+            if planned_clip and isinstance(planned_clip, dict) and planned_clip.get('subject_bbox_resolved'):
+                subject_bbox = planned_clip.get('subject_bbox')
+            else:
+                # Standalone fallback path
+                if final_duration < _ULTRA_SHORT_CLIP_FLOOR:
+                    skip_ease = True
+                subject_bbox = None
+                if "center" not in vertical_crop_focus.lower():
+                    try:
+                        from subject_detection import detect_subject_bbox_for_clip
+                        subject_bbox = detect_subject_bbox_for_clip(
+                            video_file, clip_start, source_duration, focus_mode=vertical_crop_focus
+                        )
+                    except Exception:
+                        subject_bbox = None
+                if planned_clip is not None and isinstance(planned_clip, dict):
+                    if subject_bbox is None:
+                        planned_clip.pop('subject_bbox', None)
+                    else:
+                        planned_clip['subject_bbox'] = subject_bbox
 
         extract_kwargs = {
             'video_file': video_file,
@@ -614,6 +784,9 @@ def create_clip_parallel(args):
             'use_nvenc': use_nvenc,
             'gpu_encoder': gpu_encoder,
             'subject_bbox': subject_bbox,
+            'initial_crop_x': initial_crop_x,
+            'transition_duration': transition_duration,
+            'skip_ease': skip_ease,
         }
 
         success = extract_clip_segment_ffmpeg(**extract_kwargs)
@@ -1242,6 +1415,18 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         cuts = sum(1 for t in transitions if t is None or t <= 0)
         fades = sum(1 for t in transitions if t and t > 0)
         print(f"🔀 Transitions: {fades} beat-matched crossfade(s), {cuts} hard cut(s)")
+
+    if is_vertical and planned_clip_sequence:
+        prepare_vertical_crop_continuity(
+            planned_clip_sequence=planned_clip_sequence,
+            segment_durations=segment_durations,
+            transitions=transitions,
+            in_handles=in_handles,
+            out_handles=out_handles,
+            target_size=target_size,
+            vertical_crop_focus=vertical_crop_focus,
+            max_workers=max_workers,
+        )
 
     if planned_clip_sequence:
         plan_summary = summarize_clip_plan(planned_clip_sequence)

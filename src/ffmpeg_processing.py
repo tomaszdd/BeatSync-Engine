@@ -328,6 +328,11 @@ _CROP_EASE_DURATION_S = 0.4
 # not worth an ease (avoids pointless sub-pixel motion on effectively-centered crops).
 _CROP_EASE_MIN_OFFSET_PX = 2
 
+# Floor below which clips are considered ultra-short. Ultra-short clips do not
+# visually register a "settle" and shouldn't pay the cost/risk of independent
+# subject detection and ease.
+_ULTRA_SHORT_CLIP_FLOOR = 0.40
+
 
 def _eased_crop_x_expr(start_x: int, end_x: int, ease_seconds: float) -> str:
     """FFmpeg 'x' expression that smoothstep-eases start_x -> end_x over ease_seconds.
@@ -349,6 +354,50 @@ def _eased_crop_x_expr(start_x: int, end_x: int, ease_seconds: float) -> str:
     return f"({start_x}+({end_x}-{start_x})*{smoothstep})"
 
 
+def calculate_settled_crop_x(
+    source_width: int,
+    source_height: int,
+    target_width: int = 1080,
+    target_height: int = 1920,
+    subject_bbox: Tuple[float, float, float, float] | None = None,
+) -> int:
+    """Calculate the final settled crop x offset (in pixels) for a vertical clip."""
+    sw = max(2, int(source_width))
+    sh = max(2, int(source_height))
+    tw = max(2, int(target_width))
+    th = max(2, int(target_height))
+
+    scale_factor = max(tw / float(sw), th / float(sh))
+    scaled_w = int(round(sw * scale_factor / 2.0)) * 2
+    scaled_h = int(round(sh * scale_factor / 2.0)) * 2
+    scaled_w = max(tw, scaled_w)
+    scaled_h = max(th, scaled_h)
+
+    if subject_bbox and len(subject_bbox) >= 4:
+        head_x0, _, head_x1, _ = approximate_head_region(subject_bbox)
+        cx_norm = max(0.0, min(1.0, (head_x0 + head_x1) / 2.0))
+        head_width = max(0.0, min(1.0, head_x1 - head_x0))
+        protected_width = min(1.0, head_width * 1.50)
+        fill_window_width = tw / float(scaled_w)
+        if protected_width > fill_window_width:
+            fit_scale = tw / max(1.0, sw * protected_width)
+            fit_w = max(tw, int(round(sw * fit_scale / 2.0)) * 2)
+            fit_h = max(2, int(round(sh * fit_scale / 2.0)) * 2)
+            if fit_h < th:
+                max_fit_x = max(0, fit_w - tw)
+                fit_x = int(round((cx_norm * fit_w - tw / 2.0) / 2.0)) * 2
+                return max(0, min(max_fit_x, fit_x))
+    else:
+        cx_norm = 0.5
+
+    max_x = max(0, scaled_w - tw)
+    if max_x > 0:
+        crop_center_x = cx_norm * scaled_w
+        crop_x = int(round((crop_center_x - tw / 2.0) / 2.0)) * 2
+        return max(0, min(max_x, crop_x))
+    return 0
+
+
 def build_crop_to_fill_filter(
     source_width: int,
     source_height: int,
@@ -356,6 +405,9 @@ def build_crop_to_fill_filter(
     target_height: int = 1920,
     subject_bbox: Tuple[float, float, float, float] | None = None,
     clip_duration: float | None = None,
+    initial_crop_x: int | None = None,
+    transition_duration: float | None = None,
+    skip_ease: bool = False,
 ) -> str:
     """Scale source to fill target canvas and crop horizontally/vertically.
 
@@ -365,16 +417,27 @@ def build_crop_to_fill_filter(
     so the crop window never exceeds source boundaries.
 
     When subject_bbox yields a horizontal offset meaningfully different from
-    center, the crop's x position eases in from center to that final offset
-    over the first ~0.3-0.5s of the clip (smoothstep, not linear), then holds
-    static -- a subtle "settle into place" instead of an instant snap. This is
-    NOT continuous panning: after the ease window the position is constant for
-    the rest of the clip, same as before. clip_duration (seconds) clamps the
-    ease window down for short clips so it can never eat the whole clip.
+    start position, the crop's x position eases in to that final offset
+    over ~0.3-0.5s (smoothstep, not linear), then holds static.
+
+    If initial_crop_x is provided (e.g. at a crossfade boundary), easing starts
+    from the outgoing clip's final crop position and extends over
+    (transition_duration + 0.4s) clamped to clip duration, so the blending
+    streams share framing during the blend window and only diverge smoothly.
+    At a hard cut (initial_crop_x is None), easing starts from frame center.
+    For ultra-short clips (< 0.4s) or when skip_ease is True, easing is skipped.
     """
-    ease_duration = _CROP_EASE_DURATION_S
-    if clip_duration is not None and clip_duration > 0 and clip_duration < 2 * _CROP_EASE_DURATION_S:
-        ease_duration = min(_CROP_EASE_DURATION_S, clip_duration * 0.4)
+    if skip_ease or (clip_duration is not None and clip_duration > 0 and clip_duration < _ULTRA_SHORT_CLIP_FLOOR):
+        ease_duration = 0.0
+    elif transition_duration is not None and transition_duration > 0:
+        ease_duration = transition_duration + _CROP_EASE_DURATION_S
+        if clip_duration is not None and clip_duration > 0:
+            ease_duration = min(ease_duration, max(transition_duration, clip_duration * 0.75))
+    else:
+        ease_duration = _CROP_EASE_DURATION_S
+        if clip_duration is not None and clip_duration > 0 and clip_duration < 2 * _CROP_EASE_DURATION_S:
+            ease_duration = min(_CROP_EASE_DURATION_S, clip_duration * 0.4)
+
     sw = max(2, int(source_width))
     sh = max(2, int(source_height))
     tw = max(2, int(target_width))
@@ -399,9 +462,7 @@ def build_crop_to_fill_filter(
 
     # Give detected subjects 25% breathing room on each horizontal edge. If
     # that protected extent is wider than a fill crop can show, zoom out only
-    # as much as necessary and accept modest top/bottom letterboxing. This is
-    # crucial for carried babies/blankets near an edge, where correct centering
-    # alone can still cut off both sides of the true subject.
+    # as much as necessary and accept modest top/bottom letterboxing.
     if subject_bbox and len(subject_bbox) >= 4:
         head_width = max(0.0, min(1.0, head_x1 - head_x0))
         protected_width = min(1.0, head_width * 1.50)
@@ -416,10 +477,14 @@ def build_crop_to_fill_filter(
                 fit_x = max(0, min(max_fit_x, fit_x))
                 fit_center_x = int(round((0.5 * fit_w - tw / 2.0) / 2.0)) * 2
                 fit_center_x = max(0, min(max_fit_x, fit_center_x))
-                if abs(fit_x - fit_center_x) < _CROP_EASE_MIN_OFFSET_PX:
+                if initial_crop_x is not None:
+                    fit_start_x = max(0, min(max_fit_x, int(initial_crop_x)))
+                else:
+                    fit_start_x = fit_center_x
+                if ease_duration <= 0.001 or abs(fit_x - fit_start_x) < _CROP_EASE_MIN_OFFSET_PX:
                     fit_x_expr = str(fit_x)
                 else:
-                    fit_x_expr = _eased_crop_x_expr(fit_center_x, fit_x, ease_duration)
+                    fit_x_expr = _eased_crop_x_expr(fit_start_x, fit_x, ease_duration)
                 return (
                     f"scale={fit_w}:{fit_h},crop={tw}:{fit_h}:{fit_x_expr}:0,"
                     f"pad={tw}:{th}:0:(oh-ih)/2:color=black,setsar=1"
@@ -433,10 +498,14 @@ def build_crop_to_fill_filter(
         crop_x = max(0, min(max_x, crop_x))
         neutral_x = int(round((0.5 * scaled_w - tw / 2.0) / 2.0)) * 2
         neutral_x = max(0, min(max_x, neutral_x))
-        if abs(crop_x - neutral_x) < _CROP_EASE_MIN_OFFSET_PX:
+        if initial_crop_x is not None:
+            start_x = max(0, min(max_x, int(initial_crop_x)))
+        else:
+            start_x = neutral_x
+        if ease_duration <= 0.001 or abs(crop_x - start_x) < _CROP_EASE_MIN_OFFSET_PX:
             crop_x_expr = str(crop_x)
         else:
-            crop_x_expr = _eased_crop_x_expr(neutral_x, crop_x, ease_duration)
+            crop_x_expr = _eased_crop_x_expr(start_x, crop_x, ease_duration)
     else:
         crop_x_expr = "0"
 
@@ -1410,7 +1479,10 @@ def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: fl
                                 threads: int | None = None,
                                 hwaccel: bool = True,
                                 low_priority: bool = False,
-                                subject_bbox: Tuple[float, float, float, float] | None = None) -> bool:
+                                subject_bbox: Tuple[float, float, float, float] | None = None,
+                                initial_crop_x: int | None = None,
+                                transition_duration: float | None = None,
+                                skip_ease: bool = False) -> bool:
     """
     Extract a video segment using FFmpeg with FRAME-ACCURATE timing.
     
@@ -1438,6 +1510,9 @@ def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: fl
                 filters.append(build_crop_to_fill_filter(
                     src_w, src_h, width, height, subject_bbox,
                     clip_duration=exact_source_duration,
+                    initial_crop_x=initial_crop_x,
+                    transition_duration=transition_duration,
+                    skip_ease=skip_ease,
                 ))
             else:
                 filters.append(build_fit_scale_filter(width, height))

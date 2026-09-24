@@ -18,6 +18,8 @@ from ffmpeg_processing import (
     approximate_head_region,
     build_crop_to_fill_filter,
     build_fit_scale_filter,
+    calculate_settled_crop_x,
+    _ULTRA_SHORT_CLIP_FLOOR,
 )
 from subject_detection import detect_subject, detect_subject_bbox, score_subject_and_bbox
 from title_theme import (
@@ -257,6 +259,110 @@ class TestVerticalExport(unittest.TestCase):
         self.assertIn(ORIENTATION_LANDSCAPE, ORIENTATION_CHOICES)
         self.assertIn(ORIENTATION_VERTICAL, ORIENTATION_CHOICES)
 
+    def test_crop_ease_crossfade_starts_from_previous_settled_crop_x(self):
+        """Crossfade boundary: incoming clip starts at outgoing clip's settled crop_x."""
+        bbox = (0.91, 0.1, 0.99, 0.9)  # settled crop_x = 2334
+        initial_crop_x = 200
+        transition_duration = 0.35
+        filter_str = build_crop_to_fill_filter(
+            3840, 2160, 1080, 1920, subject_bbox=bbox, clip_duration=2.0,
+            initial_crop_x=initial_crop_x, transition_duration=transition_duration,
+        )
+        crop_x_raw = _extract_crop_x_field(filter_str)
+        self.assertIn("t/", crop_x_raw, "Crossfade ease should produce an expression")
+        start_x = _resolve_crop_x(crop_x_raw, t=0.0)
+        end_x = _resolve_crop_x(crop_x_raw, t=10.0)
+        self.assertEqual(start_x, initial_crop_x, "Must start at previous clip's settled crop_x")
+        self.assertEqual(end_x, 2334, "Must settle at current clip's final crop_x")
+        # At end of crossfade window (t=0.35), should be partway through smooth ease
+        mid_x = _resolve_crop_x(crop_x_raw, t=0.35)
+        self.assertTrue(start_x < mid_x < end_x, "Must continue easing smoothly past crossfade")
+
+    def test_crop_ease_hard_cut_starts_from_frame_center(self):
+        """Hard cut boundary: incoming clip starts at frame center (neutral_x)."""
+        bbox = (0.91, 0.1, 0.99, 0.9)  # settled crop_x = 2334
+        filter_str = build_crop_to_fill_filter(
+            3840, 2160, 1080, 1920, subject_bbox=bbox, clip_duration=2.0,
+            initial_crop_x=None, transition_duration=None,
+        )
+        crop_x_raw = _extract_crop_x_field(filter_str)
+        start_x = _resolve_crop_x(crop_x_raw, t=0.0)
+        end_x = _resolve_crop_x(crop_x_raw, t=10.0)
+        neutral_x = (3414 - 1080) // 2
+        self.assertAlmostEqual(start_x, neutral_x, delta=2, msg="Hard cut must start at center")
+        self.assertEqual(end_x, 2334)
+
+    def test_crop_ease_skipped_for_ultra_short_clip(self):
+        """Clips below the ultra-short floor must render a plain static crop_x integer."""
+        bbox = (0.91, 0.1, 0.99, 0.9)
+        # clip duration 0.20s is well below 0.40s floor
+        filter_str = build_crop_to_fill_filter(
+            3840, 2160, 1080, 1920, subject_bbox=bbox, clip_duration=0.20,
+        )
+        crop_x_raw = _extract_crop_x_field(filter_str)
+        int(crop_x_raw)  # must parse as plain integer with no expression
+        self.assertNotIn("t/", crop_x_raw)
+
+    def test_calculate_settled_crop_x_matches_filter_output(self):
+        """calculate_settled_crop_x must exactly match the settled crop_x from build_crop_to_fill_filter."""
+        test_bboxes = [
+            None,
+            (0.01, 0.1, 0.1, 0.9),  # left edge -> crop_x 0
+            (0.45, 0.1, 0.55, 0.9),  # near center -> neutral_x 1168
+            (0.91, 0.1, 0.99, 0.9),  # right edge -> max_x 2334
+        ]
+        for bbox in test_bboxes:
+            expected = calculate_settled_crop_x(3840, 2160, 1080, 1920, bbox)
+            filter_str = build_crop_to_fill_filter(3840, 2160, 1080, 1920, subject_bbox=bbox, clip_duration=2.0)
+            crop_x_raw = _extract_crop_x_field(filter_str)
+            settled = int(_resolve_crop_x(crop_x_raw, t=10.0))
+            self.assertEqual(expected, settled)
+
+    def test_prepare_vertical_crop_continuity_wires_crossfades_and_ultra_short(self):
+        """Test prepare_vertical_crop_continuity properly wires crossfades, hard cuts, and ultra-short clips."""
+        from video_processor import prepare_vertical_crop_continuity
+        planned_clips = [
+            {"video_file": "clip0.mp4", "start_time": 0.0, "source_duration": 0.067},  # ultra-short (0.067s)
+            {"video_file": "clip1.mp4", "start_time": 0.0, "source_duration": 3.9},   # normal, subject right
+            {"video_file": "clip2.mp4", "start_time": 0.0, "source_duration": 2.0},   # normal, subject left
+        ]
+        durations = [0.067, 3.9, 2.0]
+        transitions = [None, 0.35]  # boundary 0->1: hard cut; boundary 1->2: crossfade
+        in_handles = [0.0, 0.0, 0.175]
+        out_handles = [0.0, 0.175, 0.0]
+
+        # Give clip 1 and clip 2 distinct bboxes
+        planned_clips[1]["subject_bbox"] = (0.91, 0.1, 0.99, 0.9)  # right edge
+        planned_clips[2]["subject_bbox"] = (0.01, 0.1, 0.10, 0.9)  # left edge
+
+        # Mock resolution retrieval to return 3840x2160 for all
+        import video_processor
+        orig_get_res = video_processor.get_video_resolution
+        video_processor.get_video_resolution = lambda vf: (3840, 2160)
+        try:
+            prepare_vertical_crop_continuity(
+                planned_clips, durations, transitions, in_handles, out_handles,
+                target_size=(1080, 1920), vertical_crop_focus="Auto",
+            )
+            # Clip 0: ultra-short, inherited Clip 1 bbox, skip_ease=True, ultra_short_skip=True
+            self.assertTrue(planned_clips[0]["ultra_short_skip"])
+            self.assertTrue(planned_clips[0]["skip_ease"])
+            self.assertFalse(planned_clips[0]["crop_ease"])
+            self.assertEqual(planned_clips[0]["subject_bbox"], planned_clips[1]["subject_bbox"])
+
+            # Clip 1: hard cut -> crop_initial_x="center", crop_ease=True
+            self.assertEqual(planned_clips[1]["crop_initial_x"], "center")
+            self.assertIsNone(planned_clips[1]["initial_crop_x"])
+            self.assertTrue(planned_clips[1]["crop_ease"])
+
+            # Clip 2: crossfade -> initial_crop_x = Clip 1's settled crop_x (2334), transition_duration=0.35
+            self.assertEqual(planned_clips[2]["initial_crop_x"], planned_clips[1]["crop_settled_x"])
+            self.assertEqual(planned_clips[2]["transition_duration"], 0.35)
+            self.assertTrue(planned_clips[2]["crop_ease"])
+        finally:
+            video_processor.get_video_resolution = orig_get_res
+
 
 if __name__ == "__main__":
     unittest.main()
+
