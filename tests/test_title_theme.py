@@ -206,6 +206,113 @@ class TestTitleTheme(unittest.TestCase):
         self.assertRegex(fc_str2, r"if\(lte\(T,[\d\.]+\),B,")
         self.assertRegex(fc_str2, r"if\(gte\(T,[\d\.]+\),A,")
 
+    def test_render_decorative_motifs_all_themes(self):
+        from title_theme import render_decorative_motif
+        import tempfile
+        from PIL import Image
+
+        for theme_name, preset in THEME_PRESETS.items():
+            # Test direct PIL Image return
+            img = render_decorative_motif(
+                preset,
+                1920,
+                1080,
+                title_text="Teresa S. Dunn",
+                subtitle_text="1st October 2025",
+            )
+            self.assertIsInstance(img, Image.Image)
+            self.assertEqual(img.size, (1920, 1080))
+            self.assertEqual(img.mode, "RGBA")
+            
+            # Confirm there are non-transparent drawn pixels in motif
+            alpha_extrema = img.getextrema()[3]
+            self.assertGreater(alpha_extrema[1], 0, f"Theme {theme_name} motif is entirely transparent")
+
+            # Test file output saving
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+                out_path = tf.name
+            try:
+                ret_path = render_decorative_motif(
+                    preset,
+                    1920,
+                    1080,
+                    title_text="Teresa S. Dunn",
+                    subtitle_text="1st October 2025",
+                    output_path=out_path,
+                )
+                self.assertEqual(ret_path, out_path)
+                self.assertTrue(os.path.isfile(out_path))
+                self.assertGreater(os.path.getsize(out_path), 500)
+            finally:
+                if os.path.isfile(out_path):
+                    os.unlink(out_path)
+
+    def test_render_decorative_motif_single_line(self):
+        from title_theme import render_decorative_motif
+        for theme_name, preset in THEME_PRESETS.items():
+            img = render_decorative_motif(
+                preset,
+                1920,
+                1080,
+                title_text="Solo Title Only",
+                subtitle_text="",
+            )
+            self.assertEqual(img.size, (1920, 1080))
+            alpha_extrema = img.getextrema()[3]
+            self.assertGreater(alpha_extrema[1], 0)
+
+    @unittest.mock.patch("ffmpeg_processing._run_media_command")
+    @unittest.mock.patch("ffmpeg_processing.os.replace")
+    @unittest.mock.patch("ffmpeg_processing.get_video_resolution", return_value=(1920, 1080))
+    @unittest.mock.patch("ffmpeg_processing.get_video_duration", return_value=60.0)
+    @unittest.mock.patch("ffmpeg_processing.get_video_fps", return_value=30.0)
+    def test_title_card_motif_overlay_input_order_prevents_leak(self, mock_fps, mock_dur, mock_res, mock_replace, mock_run):
+        from ffmpeg_processing import add_text_overlays_ffmpeg
+        from title_theme import ThemePreset
+        mock_run.return_value = unittest.mock.MagicMock(returncode=0, stderr="")
+
+        # 1. Warm & Sentimental preset with decorative motif enabled
+        preset_warm = THEME_PRESETS[THEME_WARM_SENTIMENTAL]
+        add_text_overlays_ffmpeg(
+            "dummy_video.mp4",
+            start_text="Teresa S. Dunn\n1st October 2025",
+            title_card_enabled=True,
+            theme_preset=preset_warm,
+        )
+        self.assertTrue(mock_run.called)
+        cmd = mock_run.call_args[0][0]
+        fc_idx = cmd.index("-filter_complex")
+        fc_str = cmd[fc_idx + 1]
+
+        # Motif image must be declared as a secondary input to ffmpeg
+        self.assertIn("-loop", cmd)
+        self.assertIn("-t", cmd)
+        # Verify overlay input order: [v_text] (video) MUST be first (input 0), [motif_fade] second (input 1)
+        self.assertIn("[v_text][motif_fade]overlay=0:0:enable=", fc_str)
+        self.assertNotIn("[motif_fade][v_text]overlay=", fc_str)
+
+        # Verify motif fade filter is applied to stream [1:v]
+        self.assertIn("[1:v]format=rgba,fade=t=out:", fc_str)
+
+        # 2. Preset with decorative_motif_type=None
+        import dataclasses
+        preset_no_motif = dataclasses.replace(preset_warm, decorative_motif_type="")
+        mock_run.reset_mock()
+        add_text_overlays_ffmpeg(
+            "dummy_video.mp4",
+            start_text="Teresa S. Dunn\n1st October 2025",
+            title_card_enabled=True,
+            theme_preset=preset_no_motif,
+        )
+        self.assertTrue(mock_run.called)
+        cmd2 = mock_run.call_args[0][0]
+        fc_str2 = cmd2[cmd2.index("-filter_complex") + 1]
+
+        # No motif input or overlay should be in filtergraph
+        self.assertNotIn("[v_text][motif_fade]overlay=", fc_str2)
+        self.assertNotIn("[motif_fade][v_text]overlay=", fc_str2)
+        self.assertIn("[v_text]null[v_title]", fc_str2)
+
 
 if __name__ == "__main__":
     unittest.main()

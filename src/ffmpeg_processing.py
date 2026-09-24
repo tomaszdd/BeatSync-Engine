@@ -520,6 +520,8 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
 
     start_duration = max(0.0, float(start_duration or 0.0))
     end_duration = max(0.0, float(end_duration or 0.0))
+    motif_png_path = None
+    window = 0.0
 
     if use_title_card:
         # Blur-to-sharp title treatment with designed typography and theme styling
@@ -559,6 +561,27 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
         else:
             title_font_size = _title_font_size(start_clean, frame_w, frame_h)
             title_text_chain = _make_custom_text_filter(start_clean, t_font, title_font_size, t_color, "(w-text_w)/2", "(h-text_h)/2", 0.0, window, alpha_expr=title_alpha)
+
+        # Render designed decorative graphics motif PNG (border brackets, confetti, or chevrons)
+        motif_png_path = None
+        if theme_preset and getattr(theme_preset, 'decorative_motif_type', None):
+            try:
+                from title_theme import render_decorative_motif
+                motif_file = f"{text_base}_motif_{uuid.uuid4().hex}.png"
+                render_decorative_motif(
+                    theme_preset,
+                    frame_w,
+                    frame_h,
+                    title_text=title_text if has_subtitle else start_clean,
+                    subtitle_text=subtitle_text,
+                    output_path=motif_file,
+                )
+                if os.path.isfile(motif_file):
+                    motif_png_path = motif_file
+                    temp_text_files.append(motif_file)
+            except Exception as e:
+                print(f"   ⚠️ Could not render decorative motif: {e}")
+                motif_png_path = None
 
         color_grade_eq = theme_preset.title_color_grade_eq if (theme_preset and hasattr(theme_preset, 'title_color_grade_eq')) else "brightness=-0.15:contrast=0.90"
         graphic_type = theme_preset.graphic_overlay_type if (theme_preset and hasattr(theme_preset, 'graphic_overlay_type')) else "bokeh_light_leak"
@@ -611,15 +634,29 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
                 graphic_src,
                 graphic_blend,
                 f"[orig][themed_bg]blend=all_expr='{blend_expr}':enable='lte(t,{window:.3f})'[resolved]",
-                f"[resolved]{title_text_chain}[v_title]"
+                f"[resolved]{title_text_chain}[v_text]"
             ]
         else:
             fc_parts = [
                 f"[0:v]split=2[orig][blur_in]",
                 f"[blur_in]{blur_chain}[blurred]",
                 f"[orig][blurred]blend=all_expr='{blend_expr}':enable='lte(t,{window:.3f})'[resolved]",
-                f"[resolved]{title_text_chain}[v_title]"
+                f"[resolved]{title_text_chain}[v_text]"
             ]
+
+        # Composite decorative motif graphic via overlay with identical timing
+        # CRITICAL: Input 0 MUST be the video stream [v_text], Input 1 the motif [motif_fade].
+        # When enable='lte(t, window)' evaluates to false, overlay passes through its first
+        # declared input [v_text] (which has resolved to sharp orig with alpha=0 text).
+        if motif_png_path:
+            fc_parts.append(
+                f"[1:v]format=rgba,fade=t=out:st={t_hold:.3f}:d={t_fade:.3f}:alpha=1[motif_fade]"
+            )
+            fc_parts.append(
+                f"[v_text][motif_fade]overlay=0:0:enable='lte(t,{window:.3f})'[v_title]"
+            )
+        else:
+            fc_parts.append(f"[v_text]null[v_title]")
 
         post_filters = []
         if fade_in > 0.0:
@@ -671,6 +708,8 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
         bits.append(f"fade in {fade_in:.2f}s / out {fade_out:.2f}s")
     print(f"   📝 Adding {', '.join(bits)}...")
     cmd = [FFMPEG_PATH, '-nostdin', '-hide_banner', '-i', output_file]
+    if is_complex and motif_png_path:
+        cmd.extend(['-loop', '1', '-t', f"{window:.3f}", '-i', motif_png_path])
     if is_complex:
         cmd.extend(['-filter_complex', filter_complex_str, '-map', '[v_out]', '-map', '0:a?'])
     else:
