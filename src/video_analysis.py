@@ -30,7 +30,7 @@ from ffmpeg_processing import (
 )
 from gopro_telemetry import extract_gopro_telemetry, telemetry_lookup
 from logger import ROOT_DIR, setup_environment
-from subject_detection import score_subject_confidence
+from subject_detection import score_subject_confidence, score_subject_and_bbox
 
 
 setup_environment()
@@ -1113,12 +1113,13 @@ def _measure_frame_samples(frames: Sequence[np.ndarray], sample_times: np.ndarra
     # Layer 1 (subject-detection spec): reuse this window's already-decoded
     # middle sample frame for a cheap CPU person/subject check, instead of
     # decoding anything extra.
-    subject_confidence = score_subject_confidence([frames[len(frames) // 2]])
+    subject_confidence, subject_bbox = score_subject_and_bbox([frames[len(frames) // 2]])
 
     if use_gpu and GPU_AVAILABLE and cp is not None:
         try:
             gpu_metrics = _measure_frames_gpu(frames, sample_times, start, duration)
             gpu_metrics["subject_confidence"] = subject_confidence
+            gpu_metrics["subject_bbox"] = subject_bbox
             return gpu_metrics
         except Exception:
             pass
@@ -1176,6 +1177,7 @@ def _measure_frame_samples(frames: Sequence[np.ndarray], sample_times: np.ndarra
         "quality_score": quality,
         "peak_offset": _clamp(peak_offset, 0.0, duration, default=duration * 0.5),
         "subject_confidence": subject_confidence,
+        "subject_bbox": subject_bbox,
     }
 
 
@@ -1362,6 +1364,7 @@ def _build_candidate(
         "semantic": semantic,
         "ai_analyzed": False,
         "subject_confidence": metrics.get("subject_confidence"),
+        "subject_bbox": metrics.get("subject_bbox"),
     }
 
 

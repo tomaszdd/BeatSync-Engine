@@ -286,6 +286,62 @@ def build_fit_scale_filter(width: int, height: int, color: str = "black") -> str
     )
 
 
+def build_crop_to_fill_filter(
+    source_width: int,
+    source_height: int,
+    target_width: int = 1080,
+    target_height: int = 1920,
+    subject_bbox: Tuple[float, float, float, float] | None = None,
+) -> str:
+    """Scale source to fill target canvas and crop horizontally/vertically.
+
+    For vertical mode (e.g. 1080x1920), scales source to match target height,
+    then crops target_width horizontally centered on the detected subject bbox
+    (falling back to geometric center 0.5 when no bbox is available), clamped
+    so the crop window never exceeds source boundaries.
+    """
+    sw = max(2, int(source_width))
+    sh = max(2, int(source_height))
+    tw = max(2, int(target_width))
+    th = max(2, int(target_height))
+
+    # Scale factor to fill the target canvas completely
+    scale_factor = max(tw / float(sw), th / float(sh))
+    scaled_w = int(round(sw * scale_factor / 2.0)) * 2
+    scaled_h = int(round(sh * scale_factor / 2.0)) * 2
+    scaled_w = max(tw, scaled_w)
+    scaled_h = max(th, scaled_h)
+
+    # Subject center in normalized coordinates (0..1)
+    if subject_bbox and len(subject_bbox) >= 4:
+        x0, y0, x1, y1 = subject_bbox[:4]
+        cx_norm = max(0.0, min(1.0, (x0 + x1) / 2.0))
+        cy_norm = max(0.0, min(1.0, (y0 + y1) / 2.0))
+    else:
+        cx_norm = 0.5
+        cy_norm = 0.5
+
+    # Horizontal crop offset
+    max_x = max(0, scaled_w - tw)
+    if max_x > 0:
+        crop_center_x = cx_norm * scaled_w
+        crop_x = int(round((crop_center_x - tw / 2.0) / 2.0)) * 2
+        crop_x = max(0, min(max_x, crop_x))
+    else:
+        crop_x = 0
+
+    # Vertical crop offset
+    max_y = max(0, scaled_h - th)
+    if max_y > 0:
+        crop_center_y = cy_norm * scaled_h
+        crop_y = int(round((crop_center_y - th / 2.0) / 2.0)) * 2
+        crop_y = max(0, min(max_y, crop_y))
+    else:
+        crop_y = 0
+
+    return f"scale={scaled_w}:{scaled_h},crop={tw}:{th}:{crop_x}:{crop_y},setsar=1"
+
+
 def create_looping_image_video(image_file: str, output_file: str, duration: float,
                                fps: float, use_nvenc: bool = False,
                                gpu_encoder: str = 'h264_nvenc', lossless: bool = False,
@@ -295,11 +351,19 @@ def create_looping_image_video(image_file: str, output_file: str, duration: floa
     fps = max(1.0, float(fps))
     # Scale to the final output size now (not the native photo resolution) so we don't
     # push multi-megapixel frames through the filter/encoder for the whole song length.
-    # Portrait / non-16:9 photos are letterboxed, never stretched.
-    scale_filter = (
-        build_fit_scale_filter(target_size[0], target_size[1]) if target_size
-        else "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1"
-    )
+    if target_size:
+        tw, th = target_size
+        if th > tw:
+            # Vertical mode: smart crop-to-fill
+            try:
+                img_w, img_h = get_video_resolution(image_file)
+            except Exception:
+                img_w, img_h = tw, th
+            scale_filter = build_crop_to_fill_filter(img_w, img_h, tw, th)
+        else:
+            scale_filter = build_fit_scale_filter(tw, th)
+    else:
+        scale_filter = "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1"
 
     # HEIC/WebP/etc. can be very expensive to re-decode on every looped frame with
     # some FFmpeg builds. Decode the source once to a plain PNG and loop that instead.
@@ -395,17 +459,17 @@ def _title_font_size(text: str, frame_w: int, frame_h: int) -> int:
 
     drawtext has no auto-fit, so we size from the character count: Arial-like
     faces advance roughly 0.5 * fontsize per glyph. We aim for a text width of
-    ~1/3 of the frame, keep a generous floor so it always reads big, and cap it
-    so it never grows past the frame width or a third of the height. For a
-    multi-line title the longest line drives the width.
+    ~1/3 of the frame (or ~half in portrait), keep a generous floor so it always
+    reads big, and cap it so it never grows past the frame width or height limits.
     """
     lines = [ln for ln in str(text or '').strip().splitlines() if ln.strip()]
     n = max(1, max((len(ln) for ln in lines), default=len(str(text or '').strip())))
-    aim_width = 0.34 * frame_w                      # target: about a third of the width
+    min_dim = min(frame_w, frame_h)
+    aim_width = 0.50 * min_dim if frame_w < frame_h else 0.34 * frame_w
     by_width = aim_width / (0.5 * n)
-    floor = frame_h / 10.0                          # always clearly visible
-    ceil_w = (0.95 * frame_w) / (0.5 * n)           # never overflow the frame
-    ceil_h = frame_h / 3.0                          # never taller than a third
+    floor = min_dim / 15.0                          # always clearly visible
+    ceil_w = (0.85 * frame_w) / (0.5 * n)           # never overflow the frame
+    ceil_h = frame_h / 4.0                          # never taller than a quarter
     size = min(max(by_width, floor), ceil_w, ceil_h)
     return int(max(16, round(size)))
 
@@ -544,12 +608,28 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
         t_color = theme_preset.title_color if (theme_preset and hasattr(theme_preset, 'title_color')) else "white"
         s_color = theme_preset.subtitle_color if (theme_preset and hasattr(theme_preset, 'subtitle_color')) else "white"
 
-        if has_subtitle:
-            title_font_size = _title_font_size(title_text, frame_w, frame_h)
+        if theme_preset:
+            try:
+                from title_theme import _compute_text_layout
+                _, t_size, s_size, l_gap, _, _ = _compute_text_layout(
+                    theme_preset, frame_w, frame_h, title_text if has_subtitle else start_clean, subtitle_text
+                )
+                title_font_size = t_size
+                sub_font_size = s_size
+                gap = l_gap
+                total_block_h = title_font_size + gap + sub_font_size if has_subtitle else title_font_size
+            except Exception:
+                title_font_size = _title_font_size(title_text if has_subtitle else start_clean, frame_w, frame_h)
+                sub_font_size = max(16, int(round(title_font_size * 0.52)))
+                gap = max(10, int(round(sub_font_size * 0.55)))
+                total_block_h = title_font_size + gap + sub_font_size if has_subtitle else title_font_size
+        else:
+            title_font_size = _title_font_size(title_text if has_subtitle else start_clean, frame_w, frame_h)
             sub_font_size = max(16, int(round(title_font_size * 0.52)))
             gap = max(10, int(round(sub_font_size * 0.55)))
-            total_block_h = title_font_size + gap + sub_font_size
+            total_block_h = title_font_size + gap + sub_font_size if has_subtitle else title_font_size
 
+        if has_subtitle:
             title_y = f"(h-{total_block_h})/2"
             sub_y = f"(h-{total_block_h})/2+{title_font_size}+{gap}"
             title_x = "(w-text_w)/2"
@@ -559,7 +639,6 @@ def add_text_overlays_ffmpeg(output_file: str, start_text: str = '',
             s_filter = _make_custom_text_filter(subtitle_text, s_font, sub_font_size, s_color, sub_x, sub_y, 0.0, window, alpha_expr=title_alpha)
             title_text_chain = f"{t_filter},{s_filter}"
         else:
-            title_font_size = _title_font_size(start_clean, frame_w, frame_h)
             title_text_chain = _make_custom_text_filter(start_clean, t_font, title_font_size, t_color, "(w-text_w)/2", "(h-text_h)/2", 0.0, window, alpha_expr=title_alpha)
 
         # Render designed decorative graphics motif PNG (border brackets, confetti, or chevrons)
@@ -803,7 +882,8 @@ def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: fl
                                 gpu_encoder: str = 'h264_nvenc',
                                 threads: int | None = None,
                                 hwaccel: bool = True,
-                                low_priority: bool = False) -> bool:
+                                low_priority: bool = False,
+                                subject_bbox: Tuple[float, float, float, float] | None = None) -> bool:
     """
     Extract a video segment using FFmpeg with FRAME-ACCURATE timing.
     
@@ -822,11 +902,15 @@ def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: fl
         # Trim first so each extracted segment has exact timing.
         filters.extend([f"trim=duration={exact_source_duration}", "setpts=PTS-STARTPTS"])
         
-        # Scale to target size, keeping aspect ratio (portrait sources get
-        # letter-/pillar-boxed instead of stretched to 16:9).
+        # Scale to target size. For vertical mode (height > width), use smart crop-to-fill
+        # centered on the detected subject bbox. For landscape, letterbox/fit as usual.
         if target_size:
             width, height = target_size
-            filters.append(build_fit_scale_filter(width, height))
+            if height > width:
+                src_w, src_h = get_video_resolution(video_file)
+                filters.append(build_crop_to_fill_filter(src_w, src_h, width, height, subject_bbox))
+            else:
+                filters.append(build_fit_scale_filter(width, height))
         
         # FPS filter with clone-mode edge padding for frame guarantee
         filters.append("tpad=start_mode=clone:stop_mode=clone")

@@ -105,6 +105,108 @@ def _letterbox(frame: np.ndarray, size: int) -> np.ndarray:
     return chw[None, ...]
 
 
+def detect_subject(
+    frame: np.ndarray,
+    min_confidence: float = CONFIDENCE_THRESHOLD,
+) -> Tuple[Optional[float], Optional[Tuple[float, float, float, float]]]:
+    """Detect primary subject in a BGR frame using YOLOv8n ONNX.
+
+    Returns (confidence, bbox) where bbox is normalized (x0, y0, x1, y1) in [0..1].
+    Returns (None, None) if the model is unavailable or frame is invalid.
+    Returns (conf, None) if no subject meets min_confidence.
+    """
+    session = _load_session()
+    if session is None or frame is None or getattr(frame, 'size', 0) == 0:
+        return None, None
+
+    h, w = frame.shape[:2]
+    if h <= 0 or w <= 0:
+        return None, None
+
+    scale = INPUT_SIZE / max(h, w)
+    nh, nw = max(1, int(round(h * scale))), max(1, int(round(w * scale)))
+    top, left = (INPUT_SIZE - nh) // 2, (INPUT_SIZE - nw) // 2
+
+    try:
+        input_tensor = _letterbox(frame, INPUT_SIZE)
+        outputs = session.run(None, {_input_name: input_tensor})
+        pred = outputs[0][0]  # (4 + 80, num_anchors)
+        class_scores = pred[4:, :]
+
+        target_rows = sorted(_SUBJECT_CLASS_IDS.keys())
+        person_scores = class_scores[0, :]
+        max_person_score = float(person_scores.max()) if person_scores.size else 0.0
+
+        if max_person_score >= min_confidence:
+            best_score = max_person_score
+            anchor_idx = int(np.argmax(person_scores))
+        else:
+            subject_scores = class_scores[target_rows, :]
+            if not subject_scores.size:
+                return 0.0, None
+            max_pos = np.unravel_index(np.argmax(subject_scores), subject_scores.shape)
+            best_score = float(subject_scores[max_pos])
+            anchor_idx = int(max_pos[1])
+
+        if best_score < min_confidence:
+            return float(max(0.0, best_score)), None
+
+        # Box coordinates on the INPUT_SIZE x INPUT_SIZE canvas
+        cx, cy, bw, bh = pred[:4, anchor_idx]
+        x0_c = cx - bw / 2.0
+        x1_c = cx + bw / 2.0
+        y0_c = cy - bh / 2.0
+        y1_c = cy + bh / 2.0
+
+        # Map from canvas back to original frame (un-letterbox)
+        x0_norm = max(0.0, min(1.0, (x0_c - left) / float(nw)))
+        x1_norm = max(0.0, min(1.0, (x1_c - left) / float(nw)))
+        y0_norm = max(0.0, min(1.0, (y0_c - top) / float(nh)))
+        y1_norm = max(0.0, min(1.0, (y1_c - top) / float(nh)))
+
+        if x1_norm < x0_norm:
+            x0_norm, x1_norm = x1_norm, x0_norm
+        if y1_norm < y0_norm:
+            y0_norm, y1_norm = y1_norm, y0_norm
+
+        return float(max(0.0, min(1.0, best_score))), (float(x0_norm), float(y0_norm), float(x1_norm), float(y1_norm))
+
+    except Exception as e:
+        print(f"   Warning: subject detection inference failed: {e}")
+        return None, None
+
+
+def detect_subject_bbox(
+    frame: np.ndarray,
+    min_confidence: float = 0.20,
+) -> Optional[Tuple[float, float, float, float]]:
+    """Convenience helper returning normalized (x0, y0, x1, y1) bbox or None."""
+    _, bbox = detect_subject(frame, min_confidence=min_confidence)
+    return bbox
+
+
+def score_subject_and_bbox(
+    frames: Sequence[np.ndarray],
+    min_confidence: float = CONFIDENCE_THRESHOLD,
+) -> Tuple[Optional[float], Optional[Tuple[float, float, float, float]]]:
+    """Best subject detection score and corresponding bbox across frames."""
+    frames = [f for f in frames if f is not None]
+    if not frames:
+        return None, None
+
+    best_score: Optional[float] = None
+    best_bbox: Optional[Tuple[float, float, float, float]] = None
+
+    for f in frames:
+        score, bbox = detect_subject(f, min_confidence=min_confidence)
+        if score is not None:
+            if best_score is None or score > best_score:
+                best_score = score
+                best_bbox = bbox
+
+    return best_score, best_bbox
+
+
 def score_subject_confidence(frames: Sequence[np.ndarray]) -> Optional[float]:
     """Max person/subject detection confidence across the given BGR frames.
 
@@ -112,30 +214,50 @@ def score_subject_confidence(frames: Sequence[np.ndarray]) -> Optional[float]:
     tell "no subject detected" apart from "couldn't check" and stay lenient
     in the latter case.
     """
-    session = _load_session()
-    frames = [f for f in frames if f is not None]
-    if session is None or not frames:
-        return None
+    score, _ = score_subject_and_bbox(frames, min_confidence=CONFIDENCE_THRESHOLD)
+    return score
 
-    best = 0.0
-    target_rows = sorted(_SUBJECT_CLASS_IDS.keys())
+
+def sample_frame_from_video(video_file: str, timestamp: float = 0.0) -> Optional[np.ndarray]:
+    """Extract a single BGR frame from a video or image file."""
+    if not video_file or not os.path.isfile(video_file):
+        return None
+    ext = os.path.splitext(video_file)[1].lower()
+    if ext in ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.heic', '.heif'):
+        try:
+            import cv2
+            return cv2.imread(video_file)
+        except Exception:
+            return None
     try:
-        for frame in frames:
-            input_tensor = _letterbox(frame, INPUT_SIZE)
-            outputs = session.run(None, {_input_name: input_tensor})
-            # YOLOv8 ONNX export output: (1, 4 + num_classes, num_anchors).
-            pred = outputs[0][0]
-            class_scores = pred[4:, :]
-            subject_scores = class_scores[target_rows, :]
-            if subject_scores.size:
-                best = max(best, float(subject_scores.max()))
-    except Exception as e:
-        print(f"   Warning: subject detection inference failed: {e}")
-        return None
+        import cv2
+        cap = cv2.VideoCapture(video_file)
+        if not cap.isOpened():
+            return None
+        cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, float(timestamp) * 1000.0))
+        ret, frame = cap.read()
+        cap.release()
+        if ret and frame is not None and frame.size > 0:
+            return frame
+    except Exception:
+        pass
+    return None
 
-    if best < CONFIDENCE_THRESHOLD:
-        return 0.0
-    return max(0.0, min(1.0, best))
+
+def detect_subject_bbox_for_clip(
+    video_file: str,
+    start_time: float,
+    duration: float,
+    min_confidence: float = 0.20,
+) -> Optional[Tuple[float, float, float, float]]:
+    """Detect subject bbox for a video clip by sampling a frame from the clip window."""
+    sample_time = start_time + min(max(0.1, duration), 2.0) * 0.5
+    frame = sample_frame_from_video(video_file, sample_time)
+    if frame is None and start_time > 0:
+        frame = sample_frame_from_video(video_file, start_time)
+    if frame is None:
+        return None
+    return detect_subject_bbox(frame, min_confidence=min_confidence)
 
 
 def score_frame_darkness(frames: Sequence[np.ndarray]) -> Dict[str, float]:

@@ -57,8 +57,12 @@ def build_render_plan(
     transitions: Sequence[float | None] | None = None,
     title_theme: str = 'Auto (AI mood match)',
     mood_signature: Dict[str, Any] | None = None,
+    export_orientation: str | None = None,
 ) -> Dict[str, Any]:
     """Assemble the serialisable plan dict for a finished render."""
+    computed_orientation = export_orientation or (
+        'vertical' if (target_resolution and len(target_resolution) >= 2 and target_resolution[1] > target_resolution[0]) else 'landscape'
+    )
     return {
         'version': PLAN_VERSION,
         'created_at': time.strftime('%Y-%m-%d %H:%M:%S'),
@@ -69,6 +73,7 @@ def build_render_plan(
         'segment_durations': [float(d) for d in segment_durations],
         'fps': float(fps),
         'target_resolution': list(target_resolution) if target_resolution else None,
+        'export_orientation': computed_orientation,
         'start_time': float(start_time),
         'end_time': float(end_time) if end_time else None,
         'processing_mode': processing_mode,

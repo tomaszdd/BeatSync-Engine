@@ -340,6 +340,12 @@ def parse_arguments() -> argparse.Namespace:
         help='Enable beat-matched crossfades on weaker beats while keeping punchy hard cuts on strong beats (default: True)'
     )
     parser.add_argument(
+        '--orientation',
+        choices=['landscape', 'vertical'],
+        default='landscape',
+        help='Export orientation: landscape (16:9, default) or vertical (9:16 Instagram/Reels, 1080x1920)'
+    )
+    parser.add_argument(
         '--title-card',
         action='store_true',
         default=False,
@@ -544,6 +550,20 @@ def create_clip_parallel(args):
                 f"— cut from {clip_start:.1f}s into the source"
             )
 
+        # Resolve subject bounding box for smart crop in vertical mode
+        subject_bbox = None
+        if planned_clip and isinstance(planned_clip, dict):
+            subject_bbox = planned_clip.get('subject_bbox')
+
+        if target_size and target_size[1] > target_size[0] and subject_bbox is None:
+            try:
+                from subject_detection import detect_subject_bbox_for_clip
+                subject_bbox = detect_subject_bbox_for_clip(video_file, clip_start, source_duration)
+                if planned_clip is not None and isinstance(planned_clip, dict) and subject_bbox is not None:
+                    planned_clip['subject_bbox'] = subject_bbox
+            except Exception:
+                subject_bbox = None
+
         extract_kwargs = {
             'video_file': video_file,
             'start_time': clip_start,
@@ -553,15 +573,16 @@ def create_clip_parallel(args):
             'target_size': target_size,
             'use_nvenc': use_nvenc,
             'gpu_encoder': gpu_encoder,
+            'subject_bbox': subject_bbox,
         }
 
         success = extract_clip_segment_ffmpeg(**extract_kwargs)
         
         elapsed = time.perf_counter() - clip_started
         if not success:
-            return (i, None, target_size, None, "FFmpeg extraction failed", elapsed)
+            return (i, None, target_size, None, "FFmpeg extraction failed", elapsed, None)
         
-        return (i, temp_clip_path, target_size, temp_clip_path, None, elapsed)
+        return (i, temp_clip_path, target_size, temp_clip_path, None, elapsed, subject_bbox)
         
     except Exception as e:
         elapsed = time.perf_counter() - clip_started
@@ -943,7 +964,8 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                       debug_callback: Callable[[str], None] | None = None,
                       transitions_enabled: bool = True,
                       title_card_enabled: bool = False,
-                      title_theme: str = 'Auto (AI mood match)') -> str:
+                      title_theme: str = 'Auto (AI mood match)',
+                      export_orientation: str = 'Landscape (16:9)') -> str:
     """
     Creates a music video with video clips cut to detected beats.
     
@@ -1036,6 +1058,16 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         (gpu_encoder in ('h264_nvenc', 'hevc_nvenc') and NVENC_AVAILABLE) or
         (gpu_encoder in ('h264_amf', 'hevc_amf') and AMF_AVAILABLE)
     )
+    is_vertical = (
+        export_orientation == "Vertical (9:16 — Instagram/Reels)"
+        or "vertical" in str(export_orientation).lower()
+        or (target_resolution is not None and len(target_resolution) >= 2 and target_resolution[1] > target_resolution[0])
+    )
+    if is_vertical:
+        target_size = (1080, 1920)
+    else:
+        target_size = target_resolution or get_video_resolution(video_files[0])
+
     requested_workers = max_workers
     max_workers = _effective_clip_workers(max_workers, use_nvenc)
     render_info = beat_info.setdefault("render_info", {}) if isinstance(beat_info, dict) else {}
@@ -1047,6 +1079,8 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         "requested_workers": int(requested_workers),
         "encoder": gpu_encoder.upper() if use_nvenc else ("PRORES_PROXY" if lossless_mode else "H264_CPU"),
         "output_fps": float(fps),
+        "target_resolution": f"{target_size[0]}x{target_size[1]}",
+        "export_orientation": "vertical" if is_vertical else "landscape",
     })
     # Determine mode name
     mode_name = beat_info.get('mode', 'unknown') if beat_info else 'unknown'
@@ -1195,6 +1229,8 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                 'transitions': [t for t in transitions] if transitions else [],
                 'beat_times': [float(t) for t in beat_times],
                 'fps': float(fps),
+                'target_resolution': list(target_size),
+                'export_orientation': "vertical" if is_vertical else "landscape",
                 'audio_duration': float(audio_duration),
                 'title_theme': theme_preset.name,
                 'mood_signature': {
@@ -1352,10 +1388,8 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
     
     # STANDARD MODE - Direct parallel processing (NO BATCHES)
     else:
-        # Falls back to the first file only when the caller didn't already pick a real (non-photo) source.
-        target_size = target_resolution or get_video_resolution(video_files[0])
         render_info["target_resolution"] = f"{target_size[0]}x{target_size[1]}"
-        print(f"🎞️ Target resolution: {target_size[0]}x{target_size[1]}")
+        print(f"🎞️ Target resolution: {target_size[0]}x{target_size[1]} ({'Vertical (9:16)' if is_vertical else 'Landscape (16:9)'})")
         
         print(f"\n{'='*60}")
         print(f"🎬 PROCESSING ALL CLIPS (No batch processing with FFmpeg)")
@@ -1393,11 +1427,18 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                 idx = future_to_idx[future]
                 try:
                     result_tuple = future.result()
-                    if len(result_tuple) >= 6:
-                        i, clip_path, new_target_size, temp_path, error, clip_elapsed = result_tuple
+                    if len(result_tuple) >= 7:
+                        i, clip_path, new_target_size, temp_path, error, clip_elapsed, clip_bbox = result_tuple[:7]
+                    elif len(result_tuple) >= 6:
+                        i, clip_path, new_target_size, temp_path, error, clip_elapsed = result_tuple[:6]
+                        clip_bbox = None
                     else:
                         i, clip_path, new_target_size, temp_path, error = result_tuple
                         clip_elapsed = 0.0
+                        clip_bbox = None
+                    
+                    if clip_bbox and i < len(planned_clip_sequence):
+                        planned_clip_sequence[i]['subject_bbox'] = clip_bbox
                     
                     if clip_elapsed:
                         clip_timings.append(float(clip_elapsed))
@@ -1425,6 +1466,9 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         
         clip_stage_seconds = time.perf_counter() - clip_stage_started
         _summarize_clip_timings(clip_timings, clip_stage_seconds)
+
+        if beat_info and 'render_plan_data' in beat_info:
+            beat_info['render_plan_data']['clips'] = [dict(c) for c in planned_clip_sequence]
 
         # Do not silently drop failed clips. Dropping one segment compresses the
         # output timeline and makes every later cut drift against the audio.
@@ -1546,8 +1590,12 @@ def main() -> None:
     print(f'✓ Found {len(video_files)} video/image files')
 
     fps_for_images = args.fps or get_video_fps(next((path for path in video_files if not is_image_source(path)), video_files[0]))
-    # Prefer real footage over a photo so a portrait picture can't set the whole canvas.
-    target_resolution = get_video_resolution(next((path for path in video_files if not is_image_source(path)), video_files[0]))
+    is_vertical = getattr(args, 'orientation', 'landscape') == 'vertical'
+    if is_vertical:
+        target_resolution = (1080, 1920)
+    else:
+        # Prefer real footage over a photo so a portrait picture can't set the whole canvas.
+        target_resolution = get_video_resolution(next((path for path in video_files if not is_image_source(path)), video_files[0]))
     audio_duration = get_video_duration(args.mp3_file)
     if args.end_time and args.end_time > args.start_time:
         audio_duration = args.end_time - args.start_time
@@ -1616,6 +1664,7 @@ def main() -> None:
         title_card_enabled=args.title_card,
         start_text=args.start_text,
         title_theme=args.title_theme,
+        export_orientation='Vertical (9:16 — Instagram/Reels)' if is_vertical else 'Landscape (16:9)',
     )
  
     print(f'✅ Music video created successfully: {output_file}')

@@ -390,6 +390,13 @@ INFO_TRANSITIONS_ENABLED = "Smooth crossfades on weaker beats, keeping punchy ha
 LABEL_TITLE_CARD_ENABLED = "✨ Blur-to-sharp title card"
 INFO_TITLE_CARD_ENABLED = "Opening title card: footage starts blurred and dimmed under title text, then smoothly resolves to sharp video."
 
+LABEL_EXPORT_ORIENTATION = "Export Orientation"
+INFO_EXPORT_ORIENTATION = "Landscape (16:9) preserves native source framing. Vertical (9:16) smart-crops to 1080x1920 centered on detected subjects for Instagram/Reels."
+
+ORIENTATION_LANDSCAPE = "Landscape (16:9)"
+ORIENTATION_VERTICAL = "Vertical (9:16 — Instagram/Reels)"
+ORIENTATION_CHOICES = [ORIENTATION_LANDSCAPE, ORIENTATION_VERTICAL]
+
 LABEL_TITLE_THEME = "🎨 Title Theme"
 INFO_TITLE_THEME = "Local AI mood-matched typography, graphics, and wipes or choose a curated theme."
 

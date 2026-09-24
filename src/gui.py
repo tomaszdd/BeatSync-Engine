@@ -420,9 +420,10 @@ def _store_render_plan(*, beat_info: dict, output_path: str, audio_file: str,
                        video_files: VideoFilesInput, target_resolution, processing_mode: str,
                        is_prores: bool, use_gpu: bool, gpu_encoder: str, max_workers: int,
                        strict_unique_non_overlap: bool, edge_buffer_seconds: float,
-                       text_settings: dict, transitions_enabled: bool = True,
-                       title_card_enabled: bool = False,
-                       title_theme: str = THEME_AUTO) -> str | None:
+                        text_settings: dict, transitions_enabled: bool = True,
+                        title_card_enabled: bool = False,
+                        title_theme: str = THEME_AUTO,
+                        export_orientation: str = ORIENTATION_LANDSCAPE) -> str | None:
     """Persist the rendered clip plan so single clips can be nudged later.
 
     A failure here must never invalidate an otherwise successful render.
@@ -440,6 +441,7 @@ def _store_render_plan(*, beat_info: dict, output_path: str, audio_file: str,
             clips=plan_data['clips'],
             fps=plan_data['fps'],
             target_resolution=target_resolution,
+            export_orientation=export_orientation,
             processing_mode=processing_mode,
             lossless_mode=is_prores,
             use_gpu=use_gpu,
@@ -482,6 +484,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        transitions_enabled: bool = True,
                        title_card_enabled: bool = False,
                        title_theme: str = THEME_AUTO,
+                       export_orientation: str = ORIENTATION_LANDSCAPE,
                        progress_callback: Callable[[str], None] | None = None,
                        console_logger: StageConsoleLogger | None = None) -> StatusResult:
     total_started = time.perf_counter()
@@ -563,9 +566,16 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             fps_source = next((path for path in local_video_paths if not is_image_source(path)), local_video_paths[0])
             output_fps = get_video_fps(fps_source)
 
-        # Prefer real footage over a photo so a portrait picture can't set the whole canvas.
-        resolution_source = next((path for path in local_video_paths if not is_image_source(path)), local_video_paths[0])
-        target_resolution = get_video_resolution(resolution_source)
+        is_vertical = (
+            export_orientation == ORIENTATION_VERTICAL
+            or "vertical" in str(export_orientation).lower()
+        )
+        if is_vertical:
+            target_resolution = (1080, 1920)
+        else:
+            # Prefer real footage over a photo so a portrait picture can't set the whole canvas.
+            resolution_source = next((path for path in local_video_paths if not is_image_source(path)), local_video_paths[0])
+            target_resolution = get_video_resolution(resolution_source)
 
         audio_duration = get_video_duration(local_audio_path)
         image_source_dir = os.path.join(session_dir, 'image_sources')
@@ -648,6 +658,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             transitions_enabled=transitions_enabled,
             title_card_enabled=title_card_enabled,
             title_theme=title_theme,
+            export_orientation=export_orientation,
         )
 
         # Move to output folder
@@ -681,6 +692,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             transitions_enabled=transitions_enabled,
             title_card_enabled=title_card_enabled,
             title_theme=title_theme,
+            export_orientation=export_orientation,
         )
         if plan_path:
             session_state['last_plan_path'] = plan_path
@@ -761,7 +773,8 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  fade_duration: float = 1.0,
                  transitions_enabled: bool = True,
                  title_card_enabled: bool = False,
-                 title_theme: str = THEME_AUTO) -> Iterator[StatusResult]:
+                 title_theme: str = THEME_AUTO,
+                 export_orientation: str = ORIENTATION_LANDSCAPE) -> Iterator[StatusResult]:
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
     initial_status = _stage_status(1)
@@ -804,6 +817,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                     transitions_enabled=transitions_enabled,
                     title_card_enabled=title_card_enabled,
                     title_theme=title_theme,
+                    export_orientation=export_orientation,
                     progress_callback=progress_callback,
                     console_logger=console_logger,
                 )
@@ -1054,6 +1068,7 @@ def _rerender_from_plan_impl(state: dict, progress_callback: Callable[[str], Non
                 transitions_enabled=bool(plan.get('transitions_enabled', True)),
                 title_card_enabled=bool(plan.get('title_card_enabled', False)),
                 title_theme=str(plan.get('title_theme') or text_settings.get('title_theme', THEME_AUTO)),
+                export_orientation=plan.get('export_orientation') or ('Vertical (9:16 — Instagram/Reels)' if plan.get('target_resolution') and plan['target_resolution'][1] > plan['target_resolution'][0] else 'Landscape (16:9)'),
             )
             shutil.move(result_path, output_path)
 
@@ -1077,6 +1092,7 @@ def _rerender_from_plan_impl(state: dict, progress_callback: Callable[[str], Non
             clips=beat_info.get('render_plan_data', {}).get('clips', sequence),
             fps=float(plan['fps']),
             target_resolution=tuple(plan['target_resolution']) if plan.get('target_resolution') else None,
+            export_orientation=plan.get('export_orientation'),
             start_time=float(plan.get('start_time', 0.0)),
             end_time=plan.get('end_time'),
             processing_mode=plan.get('processing_mode', 'cpu'),
@@ -1247,6 +1263,7 @@ def _default_settings_state() -> dict:
         'clip_order_mode': 'auto',
         'min_subject_confidence': 0.0,
         'max_clip_seconds': None,
+        'export_orientation': ORIENTATION_LANDSCAPE,
         'transitions_enabled': True,
         'start_text': '', 'start_text_position': 'bottom_center', 'start_text_duration': 3.0,
         'title_card_enabled': False,
@@ -1352,6 +1369,7 @@ def _persist_last_video(path: str | None) -> None:
 _SETTINGS_KEYS = [
     'output_filename', 'processing_mode', 'custom_fps', 'strict_mode', 'edge_buffer_seconds',
     'clip_order_mode', 'min_subject_confidence', 'max_clip_seconds',
+    'export_orientation',
     'transitions_enabled',
     'start_text', 'start_text_position', 'start_text_duration',
     'title_card_enabled',
@@ -1489,6 +1507,12 @@ def create_ui() -> gr.Blocks:
                         label=LABEL_MAX_CLIP_SECONDS, value=None, precision=1, minimum=0.0,
                         info=INFO_MAX_CLIP_SECONDS
                     )
+                    export_orientation = gr.Radio(
+                        choices=ORIENTATION_CHOICES,
+                        value=ORIENTATION_LANDSCAPE,
+                        label=LABEL_EXPORT_ORIENTATION,
+                        info=INFO_EXPORT_ORIENTATION,
+                    )
                     transitions_enabled = gr.Checkbox(
                         value=True,
                         label=LABEL_TRANSITIONS_ENABLED,
@@ -1600,6 +1624,7 @@ def create_ui() -> gr.Blocks:
                 fade_enabled, fade_duration,
                 transitions_enabled, title_card_enabled,
                 title_theme,
+                export_orientation,
             ],
             outputs=[video_output, status_output, session_state],
             show_progress='hidden'
@@ -1721,6 +1746,7 @@ def create_ui() -> gr.Blocks:
         _settings_components = [
             output_filename, processing_mode, custom_fps, strict_mode, edge_buffer_seconds,
             clip_order_mode, min_subject_confidence, max_clip_seconds,
+            export_orientation,
             transitions_enabled,
             start_text, start_text_position, start_text_duration,
             title_card_enabled,
