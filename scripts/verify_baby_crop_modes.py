@@ -5,6 +5,8 @@ import json
 import os
 import sys
 
+import cv2
+
 APP_DIR = r"C:\BeatSyncTest\app\BeatSync-Engine-main"
 SRC_DIR = os.path.join(APP_DIR, "src")
 for path in (APP_DIR, SRC_DIR):
@@ -37,6 +39,7 @@ def main():
         ("GX013843.MP4", 2.1),
         ("GX013847.MP4", 2.5),
         ("GX013849.MP4", 6.9),
+        ("GX013850.MP4", 12.6),
         ("GX013853.MP4", 2.986286),
         ("GX013855.MP4", 7.4),
     ]
@@ -44,6 +47,7 @@ def main():
     for name, timestamp in samples:
         source = os.path.join(footage, name)
         frame = sample_frame_from_video(source, timestamp)
+        cv2.imwrite(os.path.join(output_dir, f"{os.path.splitext(name)[0]}_{timestamp:.3f}.jpg"), frame)
         legacy_confidence, legacy_bbox = detect_subject(frame, min_confidence=0.05)
         detections = detect_subject_boxes(frame, min_confidence=0.05, only_person=True)
         row = {
@@ -82,6 +86,20 @@ def main():
         )
         if not ok:
             raise RuntimeError(f"Could not render {mode} override")
+
+    # Concrete user-reported regression: old clip index 17, GX013850 at
+    # source_start ~= 11.6 s. Render the corrected default for visual review.
+    source = os.path.join(footage, "GX013850.MP4")
+    start = 11.6
+    frame = sample_frame_from_video(source, start + 1.0)
+    detections = detect_subject_boxes(frame, min_confidence=0.05, only_person=True)
+    bbox = select_subject_bbox(detections, VERTICAL_CROP_AUTO_SMALLER)
+    output = os.path.join(output_dir, "GX013850_11.6_smaller_fit.mp4")
+    if not extract_clip_segment_ffmpeg(
+        source, start, 2.0, output, 30.0, (1080, 1920), True,
+        gpu_encoder="h264_amf", subject_bbox=bbox,
+    ):
+        raise RuntimeError("Could not render GX013850 zoom-out regression clip")
 
     output_json = os.path.join(output_dir, "verification.json")
     with open(output_json, "w", encoding="utf-8") as handle:

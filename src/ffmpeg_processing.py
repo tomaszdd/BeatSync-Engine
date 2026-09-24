@@ -306,6 +306,20 @@ def build_fit_scale_filter(width: int, height: int, color: str = "black") -> str
     )
 
 
+def approximate_head_region(
+    subject_bbox: Tuple[float, float, float, float],
+) -> Tuple[float, float, float, float]:
+    """Return a conservative head proxy from the top 20% of a person bbox.
+
+    With no keypoints or face detector, the top slice has the same horizontal
+    limits as the person box. Keeping that full width is intentionally safer
+    than assuming the head is centered: leaning, lying, and reaching subjects
+    can put a face near either horizontal edge.
+    """
+    x0, y0, x1, y1 = (float(value) for value in subject_bbox[:4])
+    return x0, y0, x1, y0 + max(0.0, y1 - y0) * 0.20
+
+
 def build_crop_to_fill_filter(
     source_width: int,
     source_height: int,
@@ -325,7 +339,7 @@ def build_crop_to_fill_filter(
     tw = max(2, int(target_width))
     th = max(2, int(target_height))
 
-    # Scale factor to fill the target canvas completely
+    # Scale factor to fill the target canvas completely.
     scale_factor = max(tw / float(sw), th / float(sh))
     scaled_w = int(round(sw * scale_factor / 2.0)) * 2
     scaled_h = int(round(sh * scale_factor / 2.0)) * 2
@@ -335,11 +349,34 @@ def build_crop_to_fill_filter(
     # Subject center in normalized coordinates (0..1)
     if subject_bbox and len(subject_bbox) >= 4:
         x0, y0, x1, y1 = subject_bbox[:4]
-        cx_norm = max(0.0, min(1.0, (x0 + x1) / 2.0))
+        head_x0, _, head_x1, _ = approximate_head_region(subject_bbox)
+        cx_norm = max(0.0, min(1.0, (head_x0 + head_x1) / 2.0))
         cy_norm = max(0.0, min(1.0, (y0 + y1) / 2.0))
     else:
         cx_norm = 0.5
         cy_norm = 0.5
+
+    # Give detected subjects 25% breathing room on each horizontal edge. If
+    # that protected extent is wider than a fill crop can show, zoom out only
+    # as much as necessary and accept modest top/bottom letterboxing. This is
+    # crucial for carried babies/blankets near an edge, where correct centering
+    # alone can still cut off both sides of the true subject.
+    if subject_bbox and len(subject_bbox) >= 4:
+        head_width = max(0.0, min(1.0, head_x1 - head_x0))
+        protected_width = min(1.0, head_width * 1.50)
+        fill_window_width = tw / float(scaled_w)
+        if protected_width > fill_window_width:
+            fit_scale = tw / max(1.0, sw * protected_width)
+            fit_w = max(tw, int(round(sw * fit_scale / 2.0)) * 2)
+            fit_h = max(2, int(round(sh * fit_scale / 2.0)) * 2)
+            if fit_h < th:
+                max_fit_x = max(0, fit_w - tw)
+                fit_x = int(round((cx_norm * fit_w - tw / 2.0) / 2.0)) * 2
+                fit_x = max(0, min(max_fit_x, fit_x))
+                return (
+                    f"scale={fit_w}:{fit_h},crop={tw}:{fit_h}:{fit_x}:0,"
+                    f"pad={tw}:{th}:0:(oh-ih)/2:color=black,setsar=1"
+                )
 
     # Horizontal crop offset
     max_x = max(0, scaled_w - tw)

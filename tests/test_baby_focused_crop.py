@@ -52,6 +52,15 @@ class TestBabyFocusedCrop(unittest.TestCase):
             adult,
         )
 
+    def test_top_edge_partial_person_is_rejected(self):
+        top_fragment = (0.22, 0.00, 0.38, 0.42)
+        carried_baby_region = (0.73, 0.00, 1.00, 0.98)
+        detections = [(0.38, top_fragment), (0.19, carried_baby_region)]
+        self.assertEqual(
+            select_subject_bbox(detections, VERTICAL_CROP_AUTO_SMALLER),
+            carried_baby_region,
+        )
+
     def test_gui_setting_defaults_and_persists(self):
         if _default_settings_state is None:
             self.skipTest("Gradio not installed in test environment")

@@ -262,8 +262,9 @@ def select_subject_bbox(
     # Multiple candidates: check for baby/child-sized candidates
     baby_cands = [c for c in valid_cands if c[2] <= max_baby_area]
     if baby_cands:
-        # Among baby-sized candidates, prefer ones positioned plausibly in frame (y1 > 0.30)
-        plausible_babies = [c for c in baby_cands if c[1][3] > 0.30]
+        # Reject top-edge partial-person boxes (heads/arms/coat fragments). A
+        # carried baby in this footage has its box center below the upper 30%.
+        plausible_babies = [c for c in baby_cands if (c[1][1] + c[1][3]) / 2.0 >= 0.30]
         candidates_to_rank = plausible_babies if plausible_babies else baby_cands
         # Prefer the smallest area candidate in the baby range
         best_baby = min(candidates_to_rank, key=lambda c: c[2])

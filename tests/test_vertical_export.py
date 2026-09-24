@@ -13,7 +13,12 @@ SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
-from ffmpeg_processing import build_crop_to_fill_filter, build_fit_scale_filter, _title_font_size
+from ffmpeg_processing import (
+    _title_font_size,
+    approximate_head_region,
+    build_crop_to_fill_filter,
+    build_fit_scale_filter,
+)
 from subject_detection import detect_subject, detect_subject_bbox, score_subject_and_bbox
 from title_theme import (
     THEME_AUTO,
@@ -59,15 +64,10 @@ class TestVerticalExport(unittest.TestCase):
         self.assertEqual(crop_x % 2, 0, "crop_x must be even")
 
     def test_build_crop_to_fill_filter_4k_subject_centered(self):
-        """Test 4K landscape to 9:16 vertical centered on detected subject bbox."""
-        # Subject centered at cx = 0.363 (e.g. x0=0.20, x1=0.526)
+        """A subject wider than the fill window gets the protected fit fallback."""
         bbox = (0.20, 0.1, 0.526, 0.9)
         filter_str = build_crop_to_fill_filter(3840, 2160, 1080, 1920, subject_bbox=bbox)
-        parts = filter_str.split("crop=")[1].split(",")[0].split(":")
-        crop_x = int(parts[2])
-        # cx = 0.363 * 3414 = 1239.3 -> crop_x = 1239.3 - 540 = 699.3 -> 698 or 700
-        self.assertTrue(690 <= crop_x <= 710, f"Expected crop_x ~698, got {crop_x}")
-        self.assertEqual(crop_x % 2, 0, "crop_x must be even")
+        self.assertIn("pad=1080:1920:0:(oh-ih)/2:color=black", filter_str)
 
     def test_build_crop_to_fill_filter_clamping_left_edge(self):
         """Test subject on far left of 4K frame clamps crop window to 0."""
@@ -97,6 +97,29 @@ class TestVerticalExport(unittest.TestCase):
         filter_str = build_crop_to_fill_filter(1080, 1920, 1080, 1920, subject_bbox=(0.2, 0.2, 0.8, 0.8))
         self.assertIn("scale=1080:1920", filter_str)
         self.assertIn("crop=1080:1920:0:0", filter_str)
+
+    def test_wide_subject_uses_zoom_out_letterbox_fallback(self):
+        """A protected subject wider than the fill window must not be side-clipped."""
+        bbox = (0.73, 0.00, 1.00, 0.98)
+        filter_str = build_crop_to_fill_filter(3840, 2160, 1080, 1920, subject_bbox=bbox)
+        self.assertIn("pad=1080:1920:0:(oh-ih)/2:color=black", filter_str)
+        self.assertIn("crop=1080:", filter_str)
+
+    def test_head_proxy_is_top_slice_with_full_horizontal_extent(self):
+        bbox = (0.73, 0.10, 1.00, 0.90)
+        self.assertEqual(approximate_head_region(bbox), (0.73, 0.10, 1.00, 0.26))
+
+    def test_edge_head_guard_zooms_out_instead_of_slicing_face(self):
+        bbox = (0.73, 0.00, 1.00, 0.98)
+        filter_str = build_crop_to_fill_filter(3840, 2160, 1080, 1920, bbox)
+        scale_part = filter_str.split("scale=")[1].split(",")[0].split(":")
+        crop_part = filter_str.split("crop=")[1].split(",")[0].split(":")
+        scaled_width = int(scale_part[0])
+        crop_x = int(crop_part[2])
+        visible_x0 = crop_x / scaled_width
+        visible_x1 = (crop_x + 1080) / scaled_width
+        self.assertLessEqual(visible_x0, bbox[0])
+        self.assertGreaterEqual(visible_x1, bbox[2])
 
     def test_landscape_letterbox_behavior_unchanged(self):
         """Confirm existing build_fit_scale_filter retains letterbox/pad for landscape export."""
