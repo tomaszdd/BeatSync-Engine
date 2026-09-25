@@ -680,7 +680,12 @@ def create_clip_parallel(args):
     in_handle = 0.0
     out_handle = 0.0
     vertical_crop_focus = "Auto (prefer smaller subject — baby/child)"
-    if len(args) >= 13:
+    stabilize_enabled = False
+    if len(args) >= 14:
+        (i, video_file, final_duration, target_size,
+         use_nvenc, gpu_encoder, temp_dir, fps, planned_clip, debug_callback,
+         in_handle, out_handle, vertical_crop_focus, stabilize_enabled) = args[:14]
+    elif len(args) >= 13:
         (i, video_file, final_duration, target_size,
          use_nvenc, gpu_encoder, temp_dir, fps, planned_clip, debug_callback,
          in_handle, out_handle, vertical_crop_focus) = args[:13]
@@ -787,6 +792,7 @@ def create_clip_parallel(args):
             'initial_crop_x': initial_crop_x,
             'transition_duration': transition_duration,
             'skip_ease': skip_ease,
+            'stabilize': bool(stabilize_enabled),
         }
 
         success = extract_clip_segment_ffmpeg(**extract_kwargs)
@@ -1185,7 +1191,8 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                       watermark_enabled: bool = False,
                       watermark_image: str | None = None,
                       watermark_position: str = 'bottom_right',
-                      watermark_opacity: float = 0.60) -> str:
+                      watermark_opacity: float = 0.60,
+                      stabilize_enabled: bool = False) -> str:
     """
     Creates a music video with video clips cut to detected beats.
     
@@ -1655,7 +1662,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             clip_args.append((i, video_file, final_duration,
                             target_size, use_nvenc, gpu_encoder, session_temp_dir, fps,
                             planned_clip, debug_callback, in_handles[i], out_handles[i],
-                            vertical_crop_focus))
+                            vertical_crop_focus, stabilize_enabled))
         
         clip_files = [None] * len(clip_args)
         clip_timings: List[float] = []

@@ -387,6 +387,12 @@ LABEL_FADE_DURATION = "Fade duration (seconds)"
 LABEL_TRANSITIONS_ENABLED = "🔀 Beat-matched transitions"
 INFO_TRANSITIONS_ENABLED = "Smooth crossfades on weaker beats, keeping punchy hard cuts on strong beats (≥88th percentile impact)."
 
+LABEL_STABILIZE_ENABLED = "📹 Stabilize Shaky Footage"
+INFO_STABILIZE_ENABLED = "Runs 2-pass video stabilization (vidstab) on every extracted clip. Helps handheld/outdoor shots; adds extraction time since it's a second decode pass."
+
+LABEL_AI_FOCUS = "🎯 AI Focus (optional)"
+INFO_AI_FOCUS = "Tell the AI what to concentrate on, e.g. \"boats and ferries arriving, trains passing through\". Candidates matching this get a scoring bonus. Leave blank for default behavior."
+
 LABEL_TITLE_CARD_ENABLED = "✨ Blur-to-sharp title card"
 INFO_TITLE_CARD_ENABLED = "Opening title card: footage starts blurred and dimmed under title text, then smoothly resolves to sharp video."
 

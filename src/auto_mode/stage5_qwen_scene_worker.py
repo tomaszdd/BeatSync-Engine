@@ -70,6 +70,28 @@ SEMANTIC_SCHEMA["properties"].update({
     "description": {"type": "string"},
 })
 
+# "focus_match" (AI Focus feature): only ever added to the schema/prompt for a run
+# where the editor actually typed a focus hint. When request["user_focus"] is blank
+# (the common case), _ACTIVE_SCHEMA/_build_prompt below stay exactly as they were
+# before this feature existed -- same prompt, same schema, same grammar-constrained
+# generation of the other fields -- so behavior is byte-identical to today, not just
+# "close to it". FOCUS_SEMANTIC_SCHEMA is only used when a focus hint is present.
+FOCUS_SEMANTIC_SCHEMA = {
+    "type": "object",
+    "properties": dict(SEMANTIC_SCHEMA["properties"], focus_match={"type": "number", "minimum": 0, "maximum": 1}),
+    "required": SEMANTIC_SCHEMA["required"] + ["focus_match"],
+    "additionalProperties": False,
+}
+
+# Set once in main() before any generate() calls, from request["user_focus"]. A
+# single worker process handles one request (one prompt/schema for its whole run),
+# so a module-level flag avoids threading a parameter through every call site.
+_FOCUS_ENABLED = False
+
+
+def _active_schema() -> Dict:
+    return FOCUS_SEMANTIC_SCHEMA if _FOCUS_ENABLED else SEMANTIC_SCHEMA
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -115,7 +137,18 @@ def _qwen_frame_width() -> int:
 
 
 def _max_new_tokens() -> int:
-    return _env_int("BEATSYNC_QWEN_MAX_NEW_TOKENS", 128, lo=32, hi=256)
+    base = _env_int("BEATSYNC_QWEN_MAX_NEW_TOKENS", 128, lo=32, hi=256)
+    if _FOCUS_ENABLED:
+        # focus_match is one more required JSON key on top of the base schema. The
+        # base budget is already tight (real captures truncate mid-description
+        # without this), so an unchanged budget truncates every response before
+        # the model reaches focus_match -- confirmed on real hardware: 0/44 focus
+        # tags validated until this headroom was added. +32 was enough to pass on
+        # a retry but still truncated most first attempts on real hardware; +48
+        # gives enough margin to validate on the first attempt instead of paying
+        # for a slot-reduction retry every time.
+        base = min(256, base + 48)
+    return base
 
 
 def _ctx_sizes() -> List[int]:
@@ -267,6 +300,12 @@ def _normalize_semantic(data: Dict) -> Dict:
     description = str(data.get("description", "")).strip()
     if not description:
         return {}
+
+    if _FOCUS_ENABLED:
+        if "focus_match" not in data:
+            return {}
+        out["focus_match"] = _clamp(data["focus_match"])
+
     out["emotion"] = emotion
     out["recommended_use"] = recommended_use
     out["framing_issue"] = framing_issue
@@ -278,9 +317,9 @@ def _semantic_from_text(text: str) -> Dict:
     return _normalize_semantic(_parse_json_object(text))
 
 
-def _build_prompt(audio_profile: Dict) -> str:
+def _build_prompt(audio_profile: Dict, user_focus: str = "") -> str:
     style_hint = audio_profile.get("smart_preset", "rhythmic_gmv_amv")
-    return (
+    prompt = (
         "You are tagging one source-video moment for professional AMV/GMV editing. "
         f"The music edit style is {style_hint}. "
         "Return JSON only. Keys: action_intensity, beauty_score, combat, chase, explosion, "
@@ -294,6 +333,14 @@ def _build_prompt(audio_profile: Dict) -> str:
         "is normal and usable); "
         "description under 12 words. Do not include markdown."
     )
+    focus = (user_focus or "").strip()
+    if focus:
+        prompt += (
+            f" The editor especially wants moments showing: {focus}. "
+            "Also return focus_match as a number 0..1: if this moment clearly shows "
+            "that, set focus_match close to 1; otherwise set it low."
+        )
+    return prompt
 
 
 def _safe_file_token(value: str) -> str:
@@ -662,7 +709,7 @@ class LlamaServerClient:
                 "json_schema": {
                     "name": "beatsync_semantic_tag",
                     "strict": True,
-                    "schema": SEMANTIC_SCHEMA,
+                    "schema": _active_schema(),
                 },
             },
         }
@@ -719,7 +766,7 @@ class LlamaMtmdClient:
             "--top-k", "1",
             "--top-p", "1",
             "--min-p", "0",
-            "--json-schema", json.dumps(SEMANTIC_SCHEMA, separators=(",", ":")),
+            "--json-schema", json.dumps(_active_schema(), separators=(",", ":")),
             "--no-warmup",
             "--log-verbosity", "1",
             "--no-log-prefix",
@@ -1069,7 +1116,10 @@ def main() -> None:
 
     model_path = request.get("qwen_model_path")
     audio_profile = request.get("audio_profile") or {}
-    prompt = _build_prompt(audio_profile)
+    user_focus = str(request.get("user_focus") or "").strip()
+    global _FOCUS_ENABLED
+    _FOCUS_ENABLED = bool(user_focus)
+    prompt = _build_prompt(audio_profile, user_focus)
 
     client = QwenLlamaClient(model_path, args.response)
     jobs = request.get("jobs")

@@ -209,11 +209,18 @@ def _qwen_backend_signature_token(qwen_model_path: str | None) -> str:
     return "ai_" + _hash_text(raw, length=20)
 
 
-def _video_signature(video_file: str, enable_ai: bool, qwen_model_path: str | None) -> str:
+def _video_signature(video_file: str, enable_ai: bool, qwen_model_path: str | None,
+                     user_focus: str = "") -> str:
     stat = os.stat(video_file)
     model_token = "no_ai"
     if enable_ai:
         model_token = _qwen_backend_signature_token(qwen_model_path)
+        # A focus hint changes the Qwen prompt/schema (focus_match), so it must
+        # change the cache key too -- otherwise re-rendering the same footage after
+        # typing a focus hint would silently reuse the focus-less cached tags and
+        # focus_match would never get computed.
+        if user_focus:
+            model_token += "|focus_" + _hash_text(user_focus, length=12)
     raw = "|".join([
         ANALYSIS_VERSION,
         os.path.normcase(os.path.abspath(video_file)),
@@ -224,12 +231,13 @@ def _video_signature(video_file: str, enable_ai: bool, qwen_model_path: str | No
     return _hash_text(raw, length=24)
 
 
-def _cache_path(video_file: str, enable_ai: bool, qwen_model_path: str | None) -> str:
+def _cache_path(video_file: str, enable_ai: bool, qwen_model_path: str | None,
+                user_focus: str = "") -> str:
     os.makedirs(VIDEO_ANALYSIS_CACHE_DIR, exist_ok=True)
     name = os.path.splitext(_safe_name(video_file))[0]
     return os.path.join(
         VIDEO_ANALYSIS_CACHE_DIR,
-        f"{_hash_text(name, 8)}_{_video_signature(video_file, enable_ai, qwen_model_path)}.json",
+        f"{_hash_text(name, 8)}_{_video_signature(video_file, enable_ai, qwen_model_path, user_focus)}.json",
     )
 
 
@@ -321,6 +329,7 @@ def analyze_video_sources(
     enable_ai: bool = True,
     qwen_model_path: str | None = None,
     debug_callback: Callable[[str], None] | None = None,
+    user_focus: str = "",
 ) -> Dict:
     """Analyze all source videos and return candidate moments for Auto Mode."""
     total_started = time.perf_counter()
@@ -349,7 +358,7 @@ def analyze_video_sources(
     cache_hits = 0
 
     for idx, video_file in enumerate(existing, 1):
-        cache_file = _cache_path(video_file, ai_available, qwen_model_path)
+        cache_file = _cache_path(video_file, ai_available, qwen_model_path, user_focus)
         cache_paths[idx] = cache_file
         cached = _load_cache(cache_file, require_ai=ai_available)
         if cached:
@@ -381,6 +390,7 @@ def analyze_video_sources(
                         job["index"],
                         len(existing),
                         debug_callback,
+                        user_focus,
                     ): job
                     for job in jobs
                 }
@@ -404,6 +414,7 @@ def analyze_video_sources(
                             job["index"],
                             len(existing),
                             debug_callback,
+                            user_focus,
                         )
         else:
             print("   CPU visual analysis workers: 1 (serial)")
@@ -418,6 +429,7 @@ def analyze_video_sources(
                     job["index"],
                     len(existing),
                     debug_callback,
+                    user_focus,
                 )
 
     # When the deterministic CPU-heavy pass ran in parallel, run Qwen after it in
@@ -435,6 +447,7 @@ def analyze_video_sources(
             qwen_model_path=qwen_model_path,
             audio_profile=audio_profile or {},
             total_video_count=len(existing),
+            user_focus=user_focus,
         )
     else:
         for job in deferred_jobs:
@@ -449,6 +462,7 @@ def analyze_video_sources(
                 audio_profile=audio_profile or {},
                 label=f"{idx}/{len(existing)}",
                 debug_callback=debug_callback,
+                user_focus=user_focus,
             )
 
     for job in jobs:
@@ -531,6 +545,7 @@ def _analyze_single_video(
     index: int | None = None,
     total: int | None = None,
     debug_callback: Callable[[str], None] | None = None,
+    user_focus: str = "",
 ) -> Dict:
     started = time.perf_counter()
     timings: Dict[str, float] = {}
@@ -626,6 +641,7 @@ def _analyze_single_video(
                 qwen_model_path=qwen_model_path,
                 use_gpu=use_gpu,
                 audio_profile=audio_profile,
+                user_focus=user_focus,
             )
             qwen_seconds = time.perf_counter() - step_started
             timings.update(qwen_info or {})
@@ -676,6 +692,7 @@ def _complete_deferred_qwen(
     audio_profile: Dict,
     label: str = "",
     debug_callback: Callable[[str], None] | None = None,
+    user_focus: str = "",
 ) -> Dict:
     candidates = video_data.get("candidates") or []
     if not candidates:
@@ -697,6 +714,7 @@ def _complete_deferred_qwen(
             qwen_model_path=qwen_model_path,
             use_gpu=use_gpu,
             audio_profile=audio_profile,
+            user_focus=user_focus,
         )
     except Exception as e:
         print(f"      Warning: Qwen semantic analysis failed for {name}: {e}")
@@ -733,6 +751,7 @@ def _complete_deferred_qwen_batch(
     qwen_model_path: str,
     audio_profile: Dict,
     total_video_count: int,
+    user_focus: str = "",
 ) -> None:
     max_windows = _qwen_max_windows()
     if max_windows == 0:
@@ -785,6 +804,7 @@ def _complete_deferred_qwen_batch(
         qwen_model_path=qwen_model_path,
         use_gpu=use_gpu,
         audio_profile=audio_profile,
+        user_focus=user_focus,
     )
     batch_seconds = time.perf_counter() - batch_started
     semantics_by_job = response.get("semantics_by_job") or {}
@@ -854,6 +874,7 @@ def _run_qwen_worker_batch(
     qwen_model_path: str,
     use_gpu: bool,
     audio_profile: Dict,
+    user_focus: str = "",
 ) -> Dict:
     os.makedirs(VIDEO_ANALYSIS_CACHE_DIR, exist_ok=True)
     token = _hash_text(f"batch|{time.time()}|{len(jobs)}", 12)
@@ -865,6 +886,7 @@ def _run_qwen_worker_batch(
         "qwen_model_path": qwen_model_path,
         "use_gpu": bool(use_gpu),
         "audio_profile": audio_profile,
+        "user_focus": user_focus or "",
     }
     with open(request_path, "w", encoding="utf-8") as f:
         json.dump(request, f)
@@ -1420,6 +1442,7 @@ def _annotate_candidates_with_qwen(
     qwen_model_path: str,
     use_gpu: bool,
     audio_profile: Dict,
+    user_focus: str = "",
 ) -> None:
     max_windows = int(os.environ.get("BEATSYNC_QWEN_MAX_WINDOWS", "120"))
     max_windows = max(0, max_windows)
@@ -1439,6 +1462,7 @@ def _annotate_candidates_with_qwen(
         qwen_model_path=qwen_model_path,
         use_gpu=use_gpu,
         audio_profile=audio_profile,
+        user_focus=user_focus,
     )
     semantics = response.get("semantics") if isinstance(response, dict) else {}
     if not semantics:
@@ -1476,6 +1500,7 @@ def _run_qwen_worker(
     qwen_model_path: str,
     use_gpu: bool,
     audio_profile: Dict,
+    user_focus: str = "",
 ) -> Dict:
     os.makedirs(VIDEO_ANALYSIS_CACHE_DIR, exist_ok=True)
     token = _hash_text(f"{video_file}|{time.time()}", 12)
@@ -1488,6 +1513,7 @@ def _run_qwen_worker(
         "qwen_model_path": qwen_model_path,
         "use_gpu": bool(use_gpu),
         "audio_profile": audio_profile,
+        "user_focus": user_focus or "",
         "candidates": [
             {
                 "id": c.get("id"),
@@ -1579,6 +1605,8 @@ def _merge_semantic(candidate: Dict, semantic: Dict) -> None:
             merged[key] = str(semantic[key])[:160]
     if semantic.get("framing_issue"):
         merged["framing_issue"] = str(semantic["framing_issue"])[:24]
+    if "focus_match" in semantic:
+        merged["focus_match"] = _clamp(semantic["focus_match"])
 
     candidate["semantic"] = merged
     candidate["ai_analyzed"] = True

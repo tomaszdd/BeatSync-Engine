@@ -108,6 +108,8 @@ from paths import (
     get_audio_input_dir,
     get_video_input_dir,
     get_output_dir,
+    set_output_dir,
+    DEFAULT_OUTPUT_DIR,
 )
 
 gpu_data = GPU_INFO
@@ -416,6 +418,24 @@ def _as_existing_source_paths(file_paths: VideoFilesInput) -> list[str]:
     return [path for path in (_as_existing_source_path(p) for p in file_paths) if path]
 
 
+def _derive_project_folder_name(video_folder_path: str | None, source_paths: list[str] | None) -> str | None:
+    """Name for the per-source-footage output subfolder: the source folder's own name.
+
+    Prefers the explicit Video Folder field; falls back to the common parent directory
+    of individually-selected/uploaded files. Returns None (render lands directly in the
+    output root, no subfolder) when no single source folder can be determined.
+    """
+    folder = (video_folder_path or '').strip()
+    if not folder:
+        dirs = {os.path.dirname(p) for p in (source_paths or []) if p}
+        if len(dirs) == 1:
+            folder = next(iter(dirs))
+    if not folder:
+        return None
+    name = os.path.basename(os.path.normpath(folder))
+    return name or None
+
+
 def _store_render_plan(*, beat_info: dict, output_path: str, audio_file: str,
                        video_files: VideoFilesInput, target_resolution, processing_mode: str,
                        is_prores: bool, use_gpu: bool, gpu_encoder: str, max_workers: int,
@@ -475,6 +495,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        edge_buffer_seconds: float = 2.0,
                        clip_order_mode: str = 'auto',
                        min_subject_confidence: float = 0.0,
+                       ai_focus: str = '',
                        max_clip_seconds: float | None = None,
                        first_video: str | None = None,
                        last_video: str | None = None,
@@ -488,6 +509,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        fade_enabled: bool = False,
                        fade_duration: float = 1.0,
                        transitions_enabled: bool = True,
+                       stabilize_enabled: bool = False,
                        title_card_enabled: bool = False,
                        title_theme: str = THEME_AUTO,
                        export_orientation: str = ORIENTATION_LANDSCAPE,
@@ -613,8 +635,12 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
         first_video = _remap_pin(first_video)
         last_video = _remap_pin(last_video)
 
-        # Prepare output paths
+        # Prepare output paths - grouped into a per-source-footage subfolder so
+        # different projects don't mix in the flat output root.
         output_folder = get_output_dir()
+        project_name = _derive_project_folder_name(video_folder_path, pre_conversion_paths)
+        if project_name:
+            output_folder = os.path.join(output_folder, project_name)
         os.makedirs(output_folder, exist_ok=True)
         name, _ = os.path.splitext(output_filename)
         ext = '.mov' if is_prores else '.mp4'
@@ -627,6 +653,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             local_audio_path,
             use_gpu=use_gpu,
             video_files=local_video_paths,
+            user_focus=(ai_focus or '').strip(),
             progress_callback=progress_callback,
             console_callback=lambda stage, message: console_logger.stage_line(stage, message) if console_logger else None,
             debug_callback=debug_callback,
@@ -665,6 +692,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             image_capture_times=image_capture_times,
             debug_callback=debug_callback,
             transitions_enabled=transitions_enabled,
+            stabilize_enabled=stabilize_enabled,
             title_card_enabled=title_card_enabled,
             title_theme=title_theme,
             export_orientation=export_orientation,
@@ -774,6 +802,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  edge_buffer_seconds: float = 2.0,
                  clip_order_mode: str = 'auto',
                  min_subject_confidence: float = 0.0,
+                 ai_focus: str = '',
                  max_clip_seconds: float | None = None,
                  first_video: str | None = None,
                  last_video: str | None = None,
@@ -787,6 +816,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  fade_enabled: bool = False,
                  fade_duration: float = 1.0,
                  transitions_enabled: bool = True,
+                 stabilize_enabled: bool = False,
                  title_card_enabled: bool = False,
                  title_theme: str = THEME_AUTO,
                  export_orientation: str = ORIENTATION_LANDSCAPE,
@@ -820,6 +850,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                     edge_buffer_seconds=edge_buffer_seconds,
                     clip_order_mode=clip_order_mode,
                     min_subject_confidence=min_subject_confidence,
+                    ai_focus=ai_focus,
                     max_clip_seconds=max_clip_seconds,
                     first_video=first_video,
                     last_video=last_video,
@@ -833,6 +864,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                     fade_enabled=fade_enabled,
                     fade_duration=fade_duration,
                     transitions_enabled=transitions_enabled,
+                    stabilize_enabled=stabilize_enabled,
                     title_card_enabled=title_card_enabled,
                     title_theme=title_theme,
                     export_orientation=export_orientation,
@@ -1054,7 +1086,12 @@ def _rerender_from_plan_impl(state: dict, progress_callback: Callable[[str], Non
         name = re.sub(r'_refined_\d{8}_\d{6}$', '', name)
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f'{name}_refined_{timestamp}{ext}'
-        output_path = os.path.join(get_output_dir(), filename)
+        rerender_output_folder = get_output_dir()
+        rerender_project_name = _derive_project_folder_name(None, plan.get('video_files'))
+        if rerender_project_name:
+            rerender_output_folder = os.path.join(rerender_output_folder, rerender_project_name)
+        os.makedirs(rerender_output_folder, exist_ok=True)
+        output_path = os.path.join(rerender_output_folder, filename)
 
         work_dir = tempfile.mkdtemp(prefix='beatsync_refine_')
         temp_output = os.path.join(work_dir, filename)
@@ -1287,16 +1324,19 @@ def _default_settings_state() -> dict:
     return {
         'audio': None, 'videos': [], 'video_folder': None, 'first_video': None, 'last_video': None,
         'output_filename': 'music_video.mp4',
+        'output_folder': DEFAULT_OUTPUT_DIR,
         'processing_mode': 'h264_nvenc' if NVENC_AVAILABLE else ('h264_amf' if AMF_AVAILABLE else 'cpu'),
         'custom_fps': None,
         'strict_mode': True,
         'edge_buffer_seconds': 2.0,
         'clip_order_mode': 'auto',
         'min_subject_confidence': 0.0,
+        'ai_focus': '',
         'max_clip_seconds': None,
         'export_orientation': ORIENTATION_LANDSCAPE,
         'vertical_crop_focus': VERTICAL_CROP_AUTO_SMALLER,
         'transitions_enabled': True,
+        'stabilize_enabled': False,
         'ident_outro_enabled': False,
         'watermark_enabled': False,
         'start_text': '', 'start_text_position': 'bottom_center', 'start_text_duration': 3.0,
@@ -1401,10 +1441,11 @@ def _persist_last_video(path: str | None) -> None:
 
 # Keys persisted from the settings components below, in the exact order they're wired up.
 _SETTINGS_KEYS = [
-    'output_filename', 'processing_mode', 'custom_fps', 'strict_mode', 'edge_buffer_seconds',
-    'clip_order_mode', 'min_subject_confidence', 'max_clip_seconds',
+    'output_filename', 'output_folder', 'processing_mode', 'custom_fps', 'strict_mode', 'edge_buffer_seconds',
+    'clip_order_mode', 'min_subject_confidence', 'ai_focus', 'max_clip_seconds',
     'export_orientation', 'vertical_crop_focus',
     'transitions_enabled',
+    'stabilize_enabled',
     'ident_outro_enabled',
     'watermark_enabled',
     'start_text', 'start_text_position', 'start_text_duration',
@@ -1441,6 +1482,9 @@ def _restore_settings():
     if 'title_card_enabled' not in state and state.get('start_text', '').strip():
         defaults['title_card_enabled'] = True
     updates = [gr.update(value=state.get(key, defaults[key])) for key in _SETTINGS_KEYS]
+    # Apply the restored (or default) output folder immediately, not just display it -
+    # get_output_dir() is read live by every render call, so this must run at startup.
+    set_output_dir(state.get('output_folder', defaults['output_folder']))
 
     last_output = state.get('last_video_output')
     video_output_value = last_output if last_output and os.path.isfile(last_output) else None
@@ -1539,6 +1583,10 @@ def create_ui() -> gr.Blocks:
                         minimum=0.0, maximum=1.0, step=0.05, value=0.0,
                         label=LABEL_MIN_SUBJECT_CONFIDENCE, info=INFO_MIN_SUBJECT_CONFIDENCE
                     )
+                    ai_focus = gr.Textbox(
+                        value='', label=LABEL_AI_FOCUS, info=INFO_AI_FOCUS,
+                        placeholder='boats and trains arriving',
+                    )
                     max_clip_seconds = gr.Number(
                         label=LABEL_MAX_CLIP_SECONDS, value=None, precision=1, minimum=0.0,
                         info=INFO_MAX_CLIP_SECONDS
@@ -1559,6 +1607,11 @@ def create_ui() -> gr.Blocks:
                         value=True,
                         label=LABEL_TRANSITIONS_ENABLED,
                         info=INFO_TRANSITIONS_ENABLED,
+                    )
+                    stabilize_enabled = gr.Checkbox(
+                        value=False,
+                        label=LABEL_STABILIZE_ENABLED,
+                        info=INFO_STABILIZE_ENABLED,
                     )
                     ident_outro_enabled = gr.Checkbox(
                         value=False,
@@ -1611,7 +1664,16 @@ def create_ui() -> gr.Blocks:
                 
                 with gr.Group():
                     gr.Markdown('### 📁 Output Settings')
+                    output_folder = gr.Textbox(
+                        value=get_output_dir(), label='Output Folder',
+                        info='Where finished videos (and their .plan.json files) are saved. Created automatically if missing.',
+                        placeholder=r'e.g. D:\BeatSync\Output',
+                    )
                     output_filename = gr.Textbox(value='music_video.mp4', label=LABEL_OUTPUT_FILENAME, info=INFO_OUTPUT_FILENAME)
+                    output_folder.input(
+                        fn=lambda p: gr.update(value=set_output_dir(p)),
+                        inputs=[output_folder], outputs=[output_folder],
+                    )
 
                 process_btn = gr.Button('🎬 Create Music Video', variant='primary', size='lg')
 
@@ -1669,12 +1731,12 @@ def create_ui() -> gr.Blocks:
                 audio_input, video_input,
                 output_filename, processing_mode, custom_fps, strict_mode,
                 session_state, video_folder_input, edge_buffer_seconds, clip_order_mode,
-                min_subject_confidence, max_clip_seconds,
+                min_subject_confidence, ai_focus, max_clip_seconds,
                 first_video_input, last_video_input,
                 start_text, start_text_position, start_text_duration,
                 end_text, end_text_position, end_text_duration, text_font,
                 fade_enabled, fade_duration,
-                transitions_enabled, title_card_enabled,
+                transitions_enabled, stabilize_enabled, title_card_enabled,
                 title_theme,
                 export_orientation,
                 vertical_crop_focus,
@@ -1799,11 +1861,12 @@ def create_ui() -> gr.Blocks:
         )
 
         _settings_components = [
-            output_filename, processing_mode, custom_fps, strict_mode, edge_buffer_seconds,
-            clip_order_mode, min_subject_confidence, max_clip_seconds,
+            output_filename, output_folder, processing_mode, custom_fps, strict_mode, edge_buffer_seconds,
+            clip_order_mode, min_subject_confidence, ai_focus, max_clip_seconds,
             export_orientation,
             vertical_crop_focus,
             transitions_enabled,
+            stabilize_enabled,
             ident_outro_enabled,
             watermark_enabled,
             start_text, start_text_position, start_text_duration,

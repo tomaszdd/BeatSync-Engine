@@ -12,7 +12,12 @@ VIDEO_INPUT_DIR = os.path.join(INPUT_DIR, 'video')
 PROCESSING_DIR = os.path.join(INPUT_DIR, 'processing')
 GRADIO_TEMP_DIR = os.path.join(INPUT_DIR, 'gradio_uploads')
 IMAGE_LOOP_CACHE_DIR = os.path.join(INPUT_DIR, 'image_loop_cache')
-OUTPUT_DIR = os.path.join(ROOT_DIR, 'output')
+
+# Persistent, user-configurable render output location (survives scratch-env rebuilds,
+# same pattern as D:\BeatSync\Models\ and D:\BeatSync\Assets\). GUI-settable at runtime
+# via set_output_dir(); falls back to this default when unset/blank.
+DEFAULT_OUTPUT_DIR = r'D:\BeatSync\Output'
+_current_output_dir = DEFAULT_OUTPUT_DIR
 
 
 def ensure_project_dirs() -> None:
@@ -24,7 +29,7 @@ def ensure_project_dirs() -> None:
         PROCESSING_DIR,
         GRADIO_TEMP_DIR,
         IMAGE_LOOP_CACHE_DIR,
-        OUTPUT_DIR,
+        _current_output_dir,
     ]:
         os.makedirs(directory, exist_ok=True)
 
@@ -60,14 +65,26 @@ def get_image_loop_cache_dir() -> str:
 
 
 def get_output_dir() -> str:
-    """Get the final output directory path."""
-    return OUTPUT_DIR
+    """Get the current render output directory (user-configurable via the GUI)."""
+    return _current_output_dir
+
+
+def set_output_dir(path: str | None) -> str:
+    """Set the render output directory at runtime, creating it if needed.
+
+    Falls back to DEFAULT_OUTPUT_DIR when path is blank. Returns the directory
+    actually applied, so callers can normalize a GUI field to the real value.
+    """
+    global _current_output_dir
+    _current_output_dir = (path or '').strip() or DEFAULT_OUTPUT_DIR
+    os.makedirs(_current_output_dir, exist_ok=True)
+    return _current_output_dir
 
 
 ASSETS_DIR = os.path.join(ROOT_DIR, 'assets')
 DEFAULT_IDENT_ASSET_PATH = os.environ.get(
     'BEATSYNC_IDENT_ASSET_PATH',
-    r'D:\BeatSync-Assets\TDD_Intro_3D_1.mov'
+    r'D:\BeatSync\Assets\TDD_Intro_3D_1.mov'
 )
 DEFAULT_WATERMARK_ASSET_PATH = os.path.join(ASSETS_DIR, 'tdd_watermark.png')
 

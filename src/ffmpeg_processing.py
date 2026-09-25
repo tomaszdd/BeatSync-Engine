@@ -1472,6 +1472,55 @@ def convert_to_prores_proxy(video_file: str, output_dir: str, fps: float = None)
         raise Exception(f"ProRes conversion error: {str(e)}")
 
 
+def _vidstab_filter_path(path: str) -> str:
+    """Escape a filesystem path for embedding in a vidstab filter option value.
+
+    FFmpeg filter-option parsing treats ':' as the key=value separator and '\\'
+    as an escape character, both of which occur unavoidably in a Windows path
+    (drive-letter colon, backslash separators) -- the same class of parsing
+    gotcha as the comma-escaping lesson in _eased_crop_x_expr/_eased_tint_eq_options
+    above, just with different characters. FFmpeg's own file I/O accepts forward
+    slashes on Windows, so switching to those sidesteps the backslash escaping
+    entirely; the drive-letter colon still needs an explicit '\\:' escape.
+
+    Confirmed empirically against this ffmpeg build (real vidstabdetect runs, not
+    just docs): the backslash-escaped colon ALONE still fails to parse ("No option
+    name near ..."), and single-quoting the value alone (leaving the colon plain)
+    also fails the same way. Only backslash-escaping the colon *and* wrapping the
+    whole value in single quotes works.
+    """
+    escaped = path.replace('\\', '/').replace(':', '\\:')
+    return f"'{escaped}'"
+
+
+def _run_vidstab_detect(video_file: str, start_time: float, duration: float,
+                        temp_dir: str, low_priority: bool = False) -> str | None:
+    """Run vidstabdetect over the same segment that will be extracted, writing a
+    per-clip transform log. Returns the log path, or None on failure.
+
+    Must see the exact same frame sequence (same trim boundaries, no fps filter
+    beforehand) that the main extraction pass feeds into vidstabtransform, or the
+    logged per-frame transforms won't line up with the frames they're applied to.
+    """
+    trf_path = os.path.join(temp_dir, f"vidstab_{uuid.uuid4().hex}.trf")
+    filter_complex = (
+        f"trim=duration={duration},setpts=PTS-STARTPTS,"
+        f"vidstabdetect=shakiness=5:accuracy=15:result={_vidstab_filter_path(trf_path)}"
+    )
+    cmd = [
+        FFMPEG_PATH, '-nostdin', '-hide_banner',
+        '-ss', str(start_time), '-t', str(duration), '-i', video_file,
+        '-vf', filter_complex,
+        '-an', '-sn', '-dn',
+        '-f', 'null', '-',
+    ]
+    result = _run_media_command(cmd, timeout=120, low_priority=low_priority)
+    if result.returncode != 0 or not os.path.exists(trf_path) or os.path.getsize(trf_path) == 0:
+        print(f"   ⚠️  vidstabdetect failed: {_short_ffmpeg_error(result.stderr)}")
+        return None
+    return trf_path
+
+
 def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: float,
                                 output_file: str, fps: float, target_size: Tuple[int, int],
                                 use_nvenc: bool,
@@ -1482,25 +1531,42 @@ def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: fl
                                 subject_bbox: Tuple[float, float, float, float] | None = None,
                                 initial_crop_x: int | None = None,
                                 transition_duration: float | None = None,
-                                skip_ease: bool = False) -> bool:
+                                skip_ease: bool = False,
+                                stabilize: bool = False) -> bool:
     """
     Extract a video segment using FFmpeg with FRAME-ACCURATE timing.
-    
+
     ✅ FRAME-ACCURATE: Uses exact frame counts instead of floating-point seconds
     ✅ ZERO DRIFT: No cumulative timing errors
     """
+    vidstab_trf = None
     try:
         # ✅ FRAME-ACCURATE: Calculate exact source and output frame counts.
         source_frame_count = max(1, seconds_to_frame_count(duration, fps))
         exact_source_duration = frame_count_to_seconds(source_frame_count, fps)
         output_frame_count = source_frame_count
 
+        # Stabilization is a real second decode pass (vidstabdetect), so it's only
+        # run when the caller opted in. The transform log lives next to the output
+        # clip so it gets cleaned up with the rest of that temp dir.
+        if stabilize:
+            vidstab_trf = _run_vidstab_detect(
+                video_file, start_time, exact_source_duration,
+                os.path.dirname(output_file) or '.', low_priority=low_priority,
+            )
+
         # Build filter complex
         filters = []
 
         # Trim first so each extracted segment has exact timing.
         filters.extend([f"trim=duration={exact_source_duration}", "setpts=PTS-STARTPTS"])
-        
+
+        # Stabilize before crop/scale, on the same raw decoded frames vidstabdetect
+        # analyzed above. optzoom defaults to on, so vidstabtransform auto-computes
+        # the zoom needed to crop out the motion-compensation borders itself.
+        if vidstab_trf:
+            filters.append(f"vidstabtransform=input={_vidstab_filter_path(vidstab_trf)}:smoothing=10")
+
         # Scale to target size. For vertical mode (height > width), use smart crop-to-fill
         # centered on the detected subject bbox. For landscape, letterbox/fit as usual.
         if target_size:
@@ -1573,20 +1639,23 @@ def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: fl
         ])
         
         result = _run_media_command(cmd, timeout=120, low_priority=low_priority)
-        
+
         if result.returncode != 0:
             print(f"   ⚠️  FFmpeg error: {result.stderr}")
             return False
-        
+
         # Verify output exists and has content
         if not os.path.exists(output_file) or os.path.getsize(output_file) == 0:
             return False
-        
+
         return True
-        
+
     except Exception as e:
         print(f"   ⚠️  Error extracting clip: {e}")
         return False
+    finally:
+        if vidstab_trf:
+            _safe_remove_file(vidstab_trf)
 
 
 def extract_prores_segment_random(video_file: str, duration: float, fps: float,
@@ -1672,6 +1741,79 @@ def extract_prores_segment_random(video_file: str, duration: float, fps: float,
 
 DEFAULT_TRANSITION_DURATION = 0.35
 
+# Identity value for each eq= filter option -- the value that makes that option a
+# no-op. Needed so the tint envelope below can ease from "no grade" up to the
+# theme's full-strength grade and back, instead of stepping on/off.
+_EQ_IDENTITY_DEFAULTS = {
+    'brightness': 0.0,
+    'contrast': 1.0,
+    'saturation': 1.0,
+    'gamma': 1.0,
+    'gamma_r': 1.0,
+    'gamma_g': 1.0,
+    'gamma_b': 1.0,
+    'gamma_weight': 1.0,
+}
+
+
+def _parse_eq_kv_pairs(tint_spec: str) -> List[Tuple[str, float]]:
+    """Parse an eq= option string like 'gamma_r=1.12:gamma_b=0.88' into pairs."""
+    pairs: List[Tuple[str, float]] = []
+    for item in tint_spec.split(':'):
+        item = item.strip()
+        if not item or '=' not in item:
+            continue
+        key, _, value = item.partition('=')
+        try:
+            pairs.append((key.strip(), float(value.strip())))
+        except ValueError:
+            continue
+    return pairs
+
+
+def _eased_tint_eq_options(theme_tint: str, offset: float, duration: float) -> str:
+    """Build eq= filter options that ease theme_tint in and back out across a
+    crossfade blend window, instead of the old hard enable='between(...)' on/off gate.
+
+    That gate turned the eq filter fully on/off with no ramp, producing a visible
+    color "flick" at every crossfade boundary. Here each parameter's value is a
+    per-frame expression that is at its identity (no grade) at both edges of the
+    blend window and peaks at the theme's full-strength value mid-blend.
+
+    Deliberately a plain triangular ramp, not a smoothstep: ffmpeg eval expressions
+    have no variable binding, so a sub-expression used twice (e.g. smoothstep's
+    3q^2-2q^3 needs q twice) gets pasted in full both times. With this envelope
+    referenced once per option and 3 options per theme, smoothstep's version
+    measured ~18,000 extra characters across a real 48-crossfade render -- enough
+    to push the whole -filter_complex argument past Windows' CreateProcess command-
+    line limit (WinError 206, "filename or extension is too long", confirmed via a
+    real failed render). The linear ramp is ~60% shorter and still fully removes
+    the hard on/off step that caused the visible flick.
+
+    Requires eval=frame on the eq filter for these per-frame expressions to be
+    evaluated every frame rather than once at init.
+
+    Commas inside a filter's expression arguments are filtergraph filter-chain
+    separators to ffmpeg, not argument separators -- the same escaping lesson as
+    _eased_crop_x_expr above. An unescaped comma here would silently truncate the
+    filtergraph exactly like it did there, so clip(...)'s comma-separated bounds
+    are backslash-escaped below.
+    """
+    d = max(0.001, float(duration))
+    # Triangular ramp 0 -> 1 -> 0 across the blend window (peaks at the midpoint),
+    # used directly as the envelope.
+    envelope = f"(1-abs(2*clip((t-{offset:.3f})/{d:.3f}\\,0\\,1)-1))"
+
+    options = ["eval=frame"]
+    for key, target in _parse_eq_kv_pairs(theme_tint):
+        identity = _EQ_IDENTITY_DEFAULTS.get(key, 1.0)
+        if identity == 0.0:
+            expr = f"(({target:.3g})*{envelope})"
+        else:
+            expr = f"({identity:.3g}+({target - identity:.3g})*{envelope})"
+        options.append(f"{key}={expr}")
+    return ":".join(options)
+
 
 def _build_transition_filtergraph(
     video_files: List[str],
@@ -1739,8 +1881,9 @@ def _build_transition_filtergraph(
                     filter_chains.append(
                         f"{prev_stream}[{cj}:v]xfade=transition={xfade_trans}:duration={d:.3f}:offset={offset:.4f}{xf_raw}"
                     )
+                    tint_options = _eased_tint_eq_options(theme_tint, offset, d)
                     filter_chains.append(
-                        f"{xf_raw}eq={theme_tint}:enable='between(t,{offset:.4f},{offset+d:.4f})'{next_stream}"
+                        f"{xf_raw}eq={tint_options}:enable='between(t,{offset:.4f},{offset+d:.4f})'{next_stream}"
                     )
                 else:
                     next_stream = f"[b{b_idx}]" if j == len(block) - 1 else f"[xf_{b_idx}_{j}]"
@@ -1815,6 +1958,23 @@ def concatenate_videos_ffmpeg(video_files: List[str], output_file: str,
             else:
                 cmd.extend(['-i', audio_file])
 
+        # A themed tint envelope on every crossfade (a per-frame expression per
+        # gamma/saturation key, not a short static value) can make this string
+        # long enough to threaten Windows' CreateProcess command-line length
+        # limit (confirmed via a real failed render: WinError 206, "filename or
+        # extension is too long", before the smoothstep->linear-ramp shortening
+        # in _eased_tint_eq_options). This build of ffmpeg (9.0.2-essentials) has
+        # no -filter_complex_script to read the graph from a file instead, so
+        # there's no way to fully sidestep the OS limit -- fail loudly and early
+        # if it's ever approached again, rather than letting ffmpeg's own cryptic
+        # "Argument list too long"/WinError 206 be the only signal.
+        if len(filter_complex) > 28000:
+            raise Exception(
+                f"filter_complex is {len(filter_complex)} chars, close to Windows' "
+                "~32767 command-line limit (WinError 206 territory) - this ffmpeg "
+                "build has no -filter_complex_script fallback. Reduce crossfade "
+                "count/effect stacking or shorten the tint envelope further."
+            )
         cmd.extend(['-filter_complex', filter_complex])
         cmd.extend(['-map', '[outv]'])
         if audio_file:

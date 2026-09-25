@@ -1255,6 +1255,10 @@ def _score_candidate(candidate: Dict, profile: Dict) -> float:
     combat = _clamp(semantic.get("combat", 0.0))
     chase = _clamp(semantic.get("chase", 0.0))
     explosion = _clamp(semantic.get("explosion", 0.0))
+    # AI Focus: absent/blank (no focus hint given this render) -> semantic.get default
+    # 0.0 -> focus_bonus 0.0, a literal no-op addition below. Only meaningfully
+    # nonzero when the editor typed a focus hint and Qwen matched this moment to it.
+    focus_bonus = 0.20 * _clamp(semantic.get("focus_match", 0.0))
 
     tag_bonus = 0.0
     if target in tags:
@@ -1284,7 +1288,7 @@ def _score_candidate(candidate: Dict, profile: Dict) -> float:
     if quality < 0.24:
         visibility_penalty += 0.16
 
-    return _clamp(match + tag_bonus + 0.12 * quality - visibility_penalty, lo=-1.0, hi=2.0)
+    return _clamp(match + tag_bonus + 0.12 * quality + focus_bonus - visibility_penalty, lo=-1.0, hi=2.0)
 
 
 def _materialize_clip(
