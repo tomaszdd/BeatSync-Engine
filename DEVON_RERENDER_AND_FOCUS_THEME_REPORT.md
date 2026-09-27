@@ -226,5 +226,38 @@ per the "don't touch AGENTS.md" constraint and because they aren't part of this 
 
 ```
 $ git log origin/main..HEAD
+(empty — HEAD matches origin/main, confirming both commits below are pushed)
 ```
-_(populated below after this report's own commit — see final push proof.)_
+
+Actual push + verification, run after this report file was written and committed:
+
+```
+$ git add DEVON_RERENDER_AND_FOCUS_THEME_REPORT.md DEVON_RERENDER_AND_FOCUS_THEME_TASK_SPEC.md
+$ git commit -m "Add Devon & Cornwall re-render + focus/theme addendum report" ...
+[main b208568] Add Devon & Cornwall re-render + focus/theme addendum report
+ 2 files changed, 305 insertions(+)
+ create mode 100644 DEVON_RERENDER_AND_FOCUS_THEME_REPORT.md
+ create mode 100644 DEVON_RERENDER_AND_FOCUS_THEME_TASK_SPEC.md
+$ git push origin main
+To https://github.com/tomaszdd/BeatSync-Engine.git
+   8469f3d..b208568  main -> main
+$ git status
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.claude/
+	AGENTS.md
+	docs/inspect_frames/
+	scripts/inspect_boxes.py
+	scripts/test_nms.py
+	scripts/test_select.py
+
+nothing added to commit but untracked files present (use "git add" to track)
+$ git log origin/main..HEAD
+(empty)
+```
+
+Two commits pushed for this task: `8469f3d` (Part 1 implementation) and `b208568` (this
+report + the task spec doc).
