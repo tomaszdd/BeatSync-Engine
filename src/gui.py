@@ -695,6 +695,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             stabilize_enabled=stabilize_enabled,
             title_card_enabled=title_card_enabled,
             title_theme=title_theme,
+            footage_description=(ai_focus or '').strip(),
             export_orientation=export_orientation,
             vertical_crop_focus=vertical_crop_focus,
             ident_outro_enabled=ident_outro_enabled,
@@ -1585,7 +1586,7 @@ def create_ui() -> gr.Blocks:
                     )
                     ai_focus = gr.Textbox(
                         value='', label=LABEL_AI_FOCUS, info=INFO_AI_FOCUS,
-                        placeholder='boats and trains arriving',
+                        placeholder='e.g. family coastal holiday, boats and trains, relaxed and nostalgic',
                     )
                     max_clip_seconds = gr.Number(
                         label=LABEL_MAX_CLIP_SECONDS, value=None, precision=1, minimum=0.0,

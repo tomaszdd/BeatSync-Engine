@@ -127,15 +127,68 @@ THEME_PRESETS: Dict[str, ThemePreset] = {
 }
 
 
+# Small local keyword lexicon for the optional footage-description text nudge to
+# compute_mood_signature() -- deliberately not an extra LLM call, so theme selection
+# stays instant/deterministic (matches this codebase's local-only scoring elsewhere).
+_TEXT_WARMTH_KEYWORDS: Dict[str, float] = {
+    "relaxed": 1.0, "nostalgic": 1.0, "family": 0.8, "sentimental": 1.0,
+    "cozy": 0.8, "cosy": 0.8, "gentle": 0.6, "calm": 0.6, "peaceful": 0.6,
+    "romantic": 0.8, "heartfelt": 0.9, "tender": 0.8, "warm": 0.9,
+    "reunion": 0.7, "memories": 0.7, "sweet": 0.6, "quiet": 0.5,
+}
+_TEXT_ENERGY_KEYWORDS: Dict[str, float] = {
+    "adventure": 1.0, "action": 1.0, "exciting": 0.9, "energetic": 1.0,
+    "thrilling": 0.9, "fast": 0.7, "extreme": 0.9, "intense": 0.8,
+    "high energy": 1.0, "adrenaline": 1.0, "sport": 0.6, "racing": 0.8,
+    "wild": 0.6, "epic": 0.7,
+}
+# "Bright/playful" terms push toward the Joyful & Bright region: a mild lift to both axes.
+_TEXT_BRIGHT_KEYWORDS: Dict[str, float] = {
+    "fun": 0.8, "bright": 0.9, "playful": 0.8, "cheerful": 0.8, "sunny": 0.7,
+    "joyful": 0.9, "silly": 0.6, "colorful": 0.6, "colourful": 0.6,
+}
+
+
+def _estimate_text_mood(description: str) -> Tuple[float, float] | None:
+    """Rough (text_warmth, text_energy) estimate for a footage-description string, via the
+    local keyword lexicon above. Returns None (neutral -- caller should apply no nudge at
+    all) when the text is blank or contains no recognized lexicon term."""
+    text = (description or "").lower().strip()
+    if not text:
+        return None
+
+    warm_hits = [weight for kw, weight in _TEXT_WARMTH_KEYWORDS.items() if kw in text]
+    energy_hits = [weight for kw, weight in _TEXT_ENERGY_KEYWORDS.items() if kw in text]
+    bright_hits = [weight for kw, weight in _TEXT_BRIGHT_KEYWORDS.items() if kw in text]
+
+    if not warm_hits and not energy_hits and not bright_hits:
+        return None
+
+    warm_values = warm_hits + [0.5 * w for w in bright_hits]
+    energy_values = energy_hits + [0.5 * w for w in bright_hits]
+
+    text_warmth = min(1.0, sum(warm_values) / len(warm_values)) if warm_values else 0.5
+    text_energy = min(1.0, sum(energy_values) / len(energy_values)) if energy_values else 0.5
+    return text_warmth, text_energy
+
+
 def compute_mood_signature(
     clips: Sequence[Dict[str, Any]] | None = None,
     beat_info: Dict[str, Any] | None = None,
+    footage_description: str = "",
 ) -> MoodSignature:
     """Analyze emotion tags, audio energy, and section mix to form an explainable mood signature.
 
     2D scoring axes:
     - warmth/sentiment axis (0.0 - 1.0): dominated by 'soft', 'sad', and 'beauty' tags.
     - energy axis (0.0 - 1.0): audio energy wave average, rhythm strength, and impact scores.
+
+    footage_description: optional free-text from the GUI's "Describe this footage" field
+    (same text also feeds Qwen's per-clip focus_match scoring elsewhere). A local keyword
+    lexicon derives a rough (text_warmth, text_energy) estimate that is blended into the
+    auto-derived warmth/energy scores below, auto-dominant (see _estimate_text_mood). A
+    blank/unrecognized description is a no-op -- output is then byte-identical to a run
+    with no description at all.
     """
     emotion_counts: Dict[str, int] = {}
     clips = clips or []
@@ -193,6 +246,17 @@ def compute_mood_signature(
 
     energy_score = round(min(1.0, max(0.0, 0.6 * avg_wave + 0.4 * avg_rhythm)), 3)
 
+    # Blend in the optional footage-description text signal, auto-dominant. A blank/
+    # unrecognized description leaves warmth_score/energy_score untouched (regression-safe).
+    auto_warmth_score = warmth_score
+    auto_energy_score = energy_score
+    text_mood = _estimate_text_mood(footage_description)
+    text_nudge_applied = text_mood is not None
+    if text_nudge_applied:
+        text_warmth, text_energy = text_mood
+        warmth_score = round(min(1.0, max(0.0, 0.7 * auto_warmth_score + 0.3 * text_warmth)), 3)
+        energy_score = round(min(1.0, max(0.0, 0.7 * auto_energy_score + 0.3 * text_energy)), 3)
+
     # Determine dominant emotion
     known_emotions = ["soft", "tension", "hype", "sad", "neutral"]
     ranked_emotions = sorted(
@@ -227,6 +291,12 @@ def compute_mood_signature(
             f"Fallback to Warm & Sentimental (warmth={warmth_score:.2f}, energy={energy_score:.2f})."
         )
 
+    if text_nudge_applied:
+        reason += (
+            f" Footage description nudged warmth {auto_warmth_score:.2f}→{warmth_score:.2f} "
+            f"and energy {auto_energy_score:.2f}→{energy_score:.2f}."
+        )
+
     return MoodSignature(
         warmth=warmth_score,
         energy=energy_score,
@@ -245,9 +315,10 @@ def resolve_theme(
     theme_choice: str | None,
     clips: Sequence[Dict[str, Any]] | None = None,
     beat_info: Dict[str, Any] | None = None,
+    footage_description: str = "",
 ) -> Tuple[ThemePreset, MoodSignature]:
     """Resolve theme preset either by auto mood-matching or explicit user selection."""
-    mood_sig = compute_mood_signature(clips, beat_info)
+    mood_sig = compute_mood_signature(clips, beat_info, footage_description=footage_description)
 
     choice = str(theme_choice or THEME_AUTO).strip()
     if choice in THEME_PRESETS:

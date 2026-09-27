@@ -1184,6 +1184,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                       transitions_enabled: bool = True,
                       title_card_enabled: bool = False,
                       title_theme: str = 'Auto (AI mood match)',
+                      footage_description: str = '',
                       export_orientation: str = 'Landscape (16:9)',
                       vertical_crop_focus: str = 'Auto (prefer smaller subject — baby/child)',
                       ident_outro_enabled: bool = False,
@@ -1442,6 +1443,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             theme_choice=title_theme,
             clips=planned_clip_sequence,
             beat_info=beat_info,
+            footage_description=footage_description,
         )
         print(f"\n{'='*60}")
         print(f"🎨 TITLE THEME & VISUAL TREATMENT: {theme_preset.name}")

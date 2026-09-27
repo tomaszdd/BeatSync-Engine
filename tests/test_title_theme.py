@@ -99,6 +99,48 @@ class TestTitleTheme(unittest.TestCase):
         self.assertIn(sig.selected_theme, THEME_PRESETS)
         self.assertIsNotNone(sig.reason)
 
+    def test_footage_description_blank_matches_no_description(self):
+        # Blank field must reproduce today's compute_mood_signature() output byte-identical.
+        clips = [{"tags": ["soft", "beauty"]}, {"tags": ["neutral"]}]
+        beat_info = {
+            "audio_visual_profile": {"average_wave": 0.5, "average_rhythm": 0.5, "average_impact": 0.5},
+            "sections": [{"type": "verse"}],
+        }
+        sig_default = compute_mood_signature(clips, beat_info)
+        sig_blank = compute_mood_signature(clips, beat_info, footage_description="")
+        sig_whitespace = compute_mood_signature(clips, beat_info, footage_description="   ")
+        self.assertEqual(sig_default, sig_blank)
+        self.assertEqual(sig_default, sig_whitespace)
+
+    def test_footage_description_no_lexicon_match_is_noop(self):
+        clips = [{"tags": ["soft", "beauty"]}]
+        beat_info = {"audio_visual_profile": {"average_wave": 0.5, "average_rhythm": 0.5}}
+        sig_default = compute_mood_signature(clips, beat_info)
+        sig_gibberish = compute_mood_signature(clips, beat_info, footage_description="xyzzy plugh quux")
+        self.assertEqual(sig_default, sig_gibberish)
+
+    def test_footage_description_warm_nudge_shifts_warmth_up(self):
+        # Deliberately borderline/low warmth automatic signal so the nudge is visible.
+        clips = [{"tags": ["neutral"]}, {"tags": ["clean"]}]
+        beat_info = {"audio_visual_profile": {"average_wave": 0.4, "average_rhythm": 0.4}}
+        sig_baseline = compute_mood_signature(clips, beat_info)
+        sig_nudged = compute_mood_signature(
+            clips, beat_info,
+            footage_description="family coastal holiday, boats and trains, relaxed and nostalgic",
+        )
+        self.assertGreater(sig_nudged.warmth, sig_baseline.warmth)
+        self.assertIn("nudged warmth", sig_nudged.reason)
+
+    def test_footage_description_energy_nudge_shifts_energy_up(self):
+        clips = [{"tags": ["neutral"]}]
+        beat_info = {"audio_visual_profile": {"average_wave": 0.3, "average_rhythm": 0.3}}
+        sig_baseline = compute_mood_signature(clips, beat_info)
+        sig_nudged = compute_mood_signature(
+            clips, beat_info, footage_description="high energy action adventure",
+        )
+        self.assertGreater(sig_nudged.energy, sig_baseline.energy)
+        self.assertIn("nudged", sig_nudged.reason)
+
     def test_resolve_theme_auto_vs_manual(self):
         # Warm input data
         clips = [{"tags": ["soft", "beauty"]}]
