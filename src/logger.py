@@ -13,8 +13,12 @@ from importlib import metadata
 # PATHS & DIRECTORIES
 # ============================================================================
 
-SRC_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(SRC_DIR)
+if getattr(sys, 'frozen', False):
+    ROOT_DIR = os.path.dirname(os.path.abspath(sys.executable))
+    SRC_DIR = getattr(sys, '_MEIPASS', os.path.join(ROOT_DIR, 'src'))
+else:
+    SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+    ROOT_DIR = os.path.dirname(SRC_DIR)
 
 # Add src to sys.path for easier imports
 if SRC_DIR not in sys.path:
@@ -97,6 +101,12 @@ def setup_environment():
         if PORTABLE_PYTHON_DIR not in os.environ.get('PATH', ''):
             os.environ['PATH'] = PORTABLE_PYTHON_DIR + os.pathsep + os.environ.get('PATH', '')
         os.environ['PYTHONHOME'] = PORTABLE_PYTHON_DIR
+
+    # FFmpeg Setup
+    if os.path.exists(FFMPEG_BIN_DIR):
+        current_path = os.environ.get('PATH', '')
+        if FFMPEG_BIN_DIR not in current_path:
+            os.environ['PATH'] = FFMPEG_BIN_DIR + os.pathsep + current_path
 
     # Make direct CLI runs behave like run.bat (-X utf8 / PYTHONIOENCODING).
     # Without this, Windows cp1252 consoles can crash on existing status icons.

@@ -15,8 +15,33 @@ IMAGE_LOOP_CACHE_DIR = os.path.join(INPUT_DIR, 'image_loop_cache')
 
 # Persistent, user-configurable render output location (survives scratch-env rebuilds,
 # same pattern as D:\BeatSync\Models\ and D:\BeatSync\Assets\). GUI-settable at runtime
-# via set_output_dir(); falls back to this default when unset/blank.
-DEFAULT_OUTPUT_DIR = r'D:\BeatSync\Output'
+def _determine_default_output_dir() -> str:
+    """Select the best default output directory based on available drives."""
+    d_candidate = r'D:\BeatSync\Output'
+    try:
+        if os.path.exists(r'D:\\'):
+            os.makedirs(d_candidate, exist_ok=True)
+            return d_candidate
+    except Exception:
+        pass
+
+    c_candidate = r'C:\BeatSync\Output'
+    try:
+        if os.path.exists(r'C:\\'):
+            os.makedirs(c_candidate, exist_ok=True)
+            return c_candidate
+    except Exception:
+        pass
+
+    local_candidate = os.path.join(ROOT_DIR, 'output')
+    try:
+        os.makedirs(local_candidate, exist_ok=True)
+    except Exception:
+        pass
+    return local_candidate
+
+
+DEFAULT_OUTPUT_DIR = _determine_default_output_dir()
 _current_output_dir = DEFAULT_OUTPUT_DIR
 
 
@@ -31,7 +56,10 @@ def ensure_project_dirs() -> None:
         IMAGE_LOOP_CACHE_DIR,
         _current_output_dir,
     ]:
-        os.makedirs(directory, exist_ok=True)
+        try:
+            os.makedirs(directory, exist_ok=True)
+        except Exception:
+            pass
 
 
 def get_input_dir() -> str:
@@ -77,7 +105,10 @@ def set_output_dir(path: str | None) -> str:
     """
     global _current_output_dir
     _current_output_dir = (path or '').strip() or DEFAULT_OUTPUT_DIR
-    os.makedirs(_current_output_dir, exist_ok=True)
+    try:
+        os.makedirs(_current_output_dir, exist_ok=True)
+    except Exception:
+        pass
     return _current_output_dir
 
 

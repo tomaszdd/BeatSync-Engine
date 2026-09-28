@@ -16,7 +16,10 @@ from typing import Dict, List, Sequence, Tuple, Any
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 # Root directory for bundled assets
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+try:
+    from logger import ROOT_DIR as REPO_ROOT
+except ImportError:
+    REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FONTS_DIR = os.path.join(REPO_ROOT, "assets", "fonts")
 
 THEME_WARM_SENTIMENTAL = "Warm & Sentimental"

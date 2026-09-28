@@ -1894,6 +1894,7 @@ def create_ui() -> gr.Blocks:
     return app
 
 if __name__ == '__main__':
+    multiprocessing.freeze_support()
     try:
         multiprocessing.set_start_method('spawn', force=True)
     except RuntimeError:
@@ -1904,10 +1905,13 @@ if __name__ == '__main__':
     
     app = create_ui()
     launch_port = find_launch_port()
+    server_name = os.environ.get("BEATSYNC_SERVER_NAME", os.environ.get("GRADIO_SERVER_NAME", "0.0.0.0"))
+    inbrowser_val = os.environ.get("BEATSYNC_INBROWSER", "0" if getattr(sys, 'frozen', False) else "1").strip().lower()
+    inbrowser = inbrowser_val in ("1", "true", "yes")
     app.launch(
-        server_name="127.0.0.1",
+        server_name=server_name,
         server_port=launch_port,
         share=False,
-        inbrowser=True,
+        inbrowser=inbrowser,
         show_error=True
     )
